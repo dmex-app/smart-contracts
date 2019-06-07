@@ -16,7 +16,7 @@ contract Token {
     function transferFrom(address _from, address _to, uint256 _value) returns (bool success);
 }
 
-/* Interface for the EtherMium Affiliates contract */
+/* Interface for the DMEX base contract */
 contract EtherMium {
     function getReserve(address token, address user) returns (uint256);
     function setReserve(address token, address user, uint256 amount) returns (bool);
@@ -37,7 +37,7 @@ contract EtherMium {
     function subBalanceSubReserve(address token, address user, uint256 subBalance, uint256 subReserve) returns (bool);
 }
 
-// The EtherMium Exchange Contract
+// The DMEX Futures Contract
 contract Exchange {
     function assert(bool assertion) pure {
         if (!assertion) throw;
