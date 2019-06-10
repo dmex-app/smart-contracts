@@ -478,9 +478,10 @@ contract Exchange {
             // position actions for maker
             if (!positionExists(t.makerInversePositionHash) && !positionExists(t.makerPositionHash))
             {
-                // check if maker has enough balance            
-                if (safeAdd(safeMul(safeSub(t.makerPrice, t.floorPrice), tv.qty) / t.makerPrice, 
-                    safeMul(tv.qty, makerFee) / (1 ether)) * 1e10 > safeSub(balances[0],tv.makerReserve))
+                // check if maker has enough balance        
+
+                
+                if (!checkEnoughBalance(t.floorPrice, t.makerPrice, tv.qty, true, makerFee, 0, futuresContractHash, safeSub(balances[0],tv.makerReserve)))
                 {
                     // maker out of balance
                     emit LogError(uint8(Errors.OUT_OF_BALANCE), t.makerOrderHash, t.takerOrderHash);
@@ -519,8 +520,9 @@ contract Exchange {
                 if (positionExists(t.makerPositionHash))
                 {
                     // check if maker has enough balance            
-                    if (safeAdd(safeMul(safeSub(t.makerPrice, t.floorPrice), tv.qty) / t.makerPrice, 
-                        safeMul(tv.qty, makerFee) / (1 ether)) * 1e10 > safeSub(balances[0],tv.makerReserve))
+                    // if (safeAdd(safeMul(safeSub(t.makerPrice, t.floorPrice), tv.qty) / t.floorPrice, 
+                    //     safeMul(tv.qty, makerFee) / (1 ether)) * 1e10 > safeSub(balances[0],tv.makerReserve))
+                    if (!checkEnoughBalance(t.floorPrice, t.makerPrice, tv.qty, true, makerFee, 0, futuresContractHash, safeSub(balances[0],tv.makerReserve)))
                     {
                         // maker out of balance
                         emit LogError(uint8(Errors.OUT_OF_BALANCE), t.makerOrderHash, t.takerOrderHash);
@@ -562,12 +564,14 @@ contract Exchange {
                     if (t.makerPrice < retrievePosition(t.makerInversePositionHash)[1])
                     {
                         // user has made a profit
-                        tv.makerProfit                      = safeMul(safeSub(retrievePosition(t.makerInversePositionHash)[1], t.makerPrice), tv.qty) / t.makerPrice;
+                        //tv.makerProfit                    = safeMul(safeSub(retrievePosition(t.makerInversePositionHash)[1], t.makerPrice), tv.qty) / t.makerPrice;
+                        tv.makerProfit                      = calculateProfit(t.makerPrice, retrievePosition(t.makerInversePositionHash)[1], tv.qty, futuresContractHash, true);
                     }
                     else
                     {
                         // user has made a loss
-                        tv.makerLoss                        = safeMul(safeSub(t.makerPrice, retrievePosition(t.makerInversePositionHash)[1]), tv.qty) / t.makerPrice;                                 
+                        //tv.makerLoss                      = safeMul(safeSub(t.makerPrice, retrievePosition(t.makerInversePositionHash)[1]), tv.qty) / t.makerPrice;    
+                        tv.makerLoss                        = calculateLoss(t.makerPrice, retrievePosition(t.makerInversePositionHash)[1], tv.qty, futuresContractHash, true);                                        
                     }
 
 
@@ -605,7 +609,8 @@ contract Exchange {
             {
                 
                 // check if taker has enough balance
-                if (safeAdd(safeAdd(safeMul(safeSub(t.capPrice, t.makerPrice), tv.qty)  / t.makerPrice, safeMul(tv.qty, takerFee) / (1 ether))  * 1e10, t.takerGasFee) > safeSub(balances[1],tv.takerReserve))
+                // if (safeAdd(safeAdd(safeMul(safeSub(t.capPrice, t.makerPrice), tv.qty)  / t.capPrice, safeMul(tv.qty, takerFee) / (1 ether))  * 1e10, t.takerGasFee) > safeSub(balances[1],tv.takerReserve))
+                if (!checkEnoughBalance(t.capPrice, t.makerPrice, tv.qty, false, takerFee, t.takerGasFee, futuresContractHash, safeSub(balances[1],tv.takerReserve)))
                 {
                     // maker out of balance
                     emit LogError(uint8(Errors.OUT_OF_BALANCE), t.makerOrderHash, t.takerOrderHash);
@@ -643,7 +648,8 @@ contract Exchange {
                 if (positionExists(t.takerPositionHash))
                 {
                     // check if taker has enough balance
-                    if (safeAdd(safeAdd(safeMul(safeSub(t.capPrice, t.makerPrice), tv.qty)  / t.makerPrice, safeMul(tv.qty, takerFee) / (1 ether))  * 1e10, t.takerGasFee) > safeSub(balances[1],tv.takerReserve))
+                    //if (safeAdd(safeAdd(safeMul(safeSub(t.capPrice, t.makerPrice), tv.qty)  / t.capPrice, safeMul(tv.qty, takerFee) / (1 ether))  * 1e10, t.takerGasFee) > safeSub(balances[1],tv.takerReserve))
+                    if (!checkEnoughBalance(t.capPrice, t.makerPrice, tv.qty, false, takerFee, t.takerGasFee, futuresContractHash, safeSub(balances[1],tv.takerReserve)))
                     {
                         // maker out of balance
                         emit LogError(uint8(Errors.OUT_OF_BALANCE), t.makerOrderHash, t.takerOrderHash);
@@ -685,12 +691,14 @@ contract Exchange {
                     if (t.makerPrice > retrievePosition(t.takerInversePositionHash)[1])
                     {
                         // user has made a profit
-                        tv.takerProfit                      = safeMul(safeSub(t.makerPrice, retrievePosition(t.takerInversePositionHash)[1]), tv.qty) / t.makerPrice;
+                        //tv.takerProfit                    = safeMul(safeSub(t.makerPrice, retrievePosition(t.takerInversePositionHash)[1]), tv.qty) / t.makerPrice;
+                        tv.takerProfit                      = calculateProfit(t.makerPrice, retrievePosition(t.takerInversePositionHash)[1], tv.qty, futuresContractHash, false);
                     }
                     else
                     {
                         // user has made a loss
-                        tv.takerLoss                        = safeMul(safeSub(retrievePosition(t.takerInversePositionHash)[1], t.makerPrice), tv.qty) / t.makerPrice;                                  
+                        //tv.takerLoss                      = safeMul(safeSub(retrievePosition(t.takerInversePositionHash)[1], t.makerPrice), tv.qty) / t.makerPrice;                                  
+                        tv.takerLoss                        = calculateLoss(t.makerPrice, retrievePosition(t.takerInversePositionHash)[1], tv.qty, futuresContractHash, false); 
                     }
 
                     updateBalances(
@@ -731,7 +739,8 @@ contract Exchange {
             if (!positionExists(t.makerInversePositionHash) && !positionExists(t.makerPositionHash))
             {
                 // check if maker has enough balance
-                if (safeAdd(safeMul(safeSub(t.makerPrice, t.floorPrice), tv.qty) / t.makerPrice, safeMul(tv.qty, makerFee) / (1 ether)) * 1e10 > safeSub(balances[0],tv.makerReserve))
+                //if (safeAdd(safeMul(safeSub(t.makerPrice, t.floorPrice), tv.qty) / t.floorPrice, safeMul(tv.qty, makerFee) / (1 ether)) * 1e10 > safeSub(balances[0],tv.makerReserve))
+                if (!checkEnoughBalance(t.floorPrice, t.makerPrice, tv.qty, true, makerFee, 0, futuresContractHash, safeSub(balances[0],tv.makerReserve)))
                 {
                     // maker out of balance
                     emit LogError(uint8(Errors.OUT_OF_BALANCE), t.makerOrderHash, t.takerOrderHash);
@@ -768,7 +777,8 @@ contract Exchange {
                 if (positionExists(t.makerPositionHash))
                 {
                     // check if maker has enough balance
-                    if (safeAdd(safeMul(safeSub(t.makerPrice, t.floorPrice), tv.qty) / t.makerPrice, safeMul(tv.qty, makerFee) / (1 ether)) * 1e10 > safeSub(balances[0],tv.makerReserve))
+                    //if (safeAdd(safeMul(safeSub(t.makerPrice, t.floorPrice), tv.qty) / t.floorPrice, safeMul(tv.qty, makerFee) / (1 ether)) * 1e10 > safeSub(balances[0],tv.makerReserve))
+                    if (!checkEnoughBalance(t.floorPrice, t.makerPrice, tv.qty, true, makerFee, 0, futuresContractHash, safeSub(balances[0],tv.makerReserve)))
                     {
                         // maker out of balance
                         emit LogError(uint8(Errors.OUT_OF_BALANCE), t.makerOrderHash, t.takerOrderHash);
@@ -810,12 +820,14 @@ contract Exchange {
                     if (t.makerPrice > retrievePosition(t.makerInversePositionHash)[1])
                     {
                         // user has made a profit
-                        tv.makerProfit                      = safeMul(safeSub(t.makerPrice, retrievePosition(t.makerInversePositionHash)[1]), tv.qty) / t.makerPrice;
+                        //tv.makerProfit                    = safeMul(safeSub(t.makerPrice, retrievePosition(t.makerInversePositionHash)[1]), tv.qty) / t.makerPrice;
+                        tv.makerProfit                      = calculateProfit(t.makerPrice, retrievePosition(t.makerInversePositionHash)[1], tv.qty, futuresContractHash, false);
                     }
                     else
                     {
                         // user has made a loss
-                        tv.makerLoss                        = safeMul(safeSub(retrievePosition(t.makerInversePositionHash)[1], t.makerPrice), tv.qty) / t.makerPrice;                                
+                        //tv.makerLoss                      = safeMul(safeSub(retrievePosition(t.makerInversePositionHash)[1], t.makerPrice), tv.qty) / t.makerPrice; 
+                        tv.makerLoss                        = calculateLoss(t.makerPrice, retrievePosition(t.makerInversePositionHash)[1], tv.qty, futuresContractHash, false);                               
                     }
 
                     updateBalances(
@@ -848,7 +860,8 @@ contract Exchange {
             if (!positionExists(t.takerInversePositionHash) && !positionExists(t.takerPositionHash))
             {
                 // check if taker has enough balance
-                if (safeAdd(safeAdd(safeMul(safeSub(t.capPrice, t.makerPrice), tv.qty)  / t.makerPrice, safeMul(tv.qty, takerFee) / (1 ether)), t.takerGasFee / 1e10) * 1e10 > safeSub(balances[1],tv.takerReserve))
+                // if (safeAdd(safeAdd(safeMul(safeSub(t.capPrice, t.makerPrice), tv.qty)  / t.capPrice, safeMul(tv.qty, takerFee) / (1 ether)), t.takerGasFee / 1e10) * 1e10 > safeSub(balances[1],tv.takerReserve))
+                if (!checkEnoughBalance(t.capPrice, t.makerPrice, tv.qty, false, takerFee, t.takerGasFee, futuresContractHash, safeSub(balances[1],tv.takerReserve)))
                 {
                     // maker out of balance
                     emit LogError(uint8(Errors.OUT_OF_BALANCE), t.makerOrderHash, t.takerOrderHash);
@@ -886,7 +899,8 @@ contract Exchange {
                 if (positionExists(t.takerPositionHash))
                 {
                     // check if taker has enough balance
-                    if (safeAdd(safeAdd(safeMul(safeSub(t.capPrice, t.makerPrice), tv.qty)  / t.makerPrice, safeMul(tv.qty, takerFee) / (1 ether)), t.takerGasFee / 1e10) * 1e10 > safeSub(balances[1],tv.takerReserve))
+                    //if (safeAdd(safeAdd(safeMul(safeSub(t.capPrice, t.makerPrice), tv.qty)  / t.capPrice, safeMul(tv.qty, takerFee) / (1 ether)), t.takerGasFee / 1e10) * 1e10 > safeSub(balances[1],tv.takerReserve))
+                    if (!checkEnoughBalance(t.capPrice, t.makerPrice, tv.qty, false, takerFee, t.takerGasFee, futuresContractHash, safeSub(balances[1],tv.takerReserve)))
                     {
                         // maker out of balance
                         emit LogError(uint8(Errors.OUT_OF_BALANCE), t.makerOrderHash, t.takerOrderHash);
@@ -928,12 +942,14 @@ contract Exchange {
                     if (t.makerPrice < retrievePosition(t.takerInversePositionHash)[1])
                     {
                         // user has made a profit
-                        tv.takerProfit                      = safeMul(safeSub(retrievePosition(t.takerInversePositionHash)[1], t.makerPrice), tv.qty) / t.makerPrice;
+                        //tv.takerProfit                    = safeMul(safeSub(retrievePosition(t.takerInversePositionHash)[1], t.makerPrice), tv.qty) / t.makerPrice;
+                        tv.takerProfit                      = calculateProfit(t.makerPrice, retrievePosition(t.takerInversePositionHash)[1], tv.qty, futuresContractHash, true);
                     }
                     else
                     {
                         // user has made a loss
-                        tv.takerLoss                        = safeMul(safeSub(t.makerPrice, retrievePosition(t.takerInversePositionHash)[1]), tv.qty) / t.makerPrice;                                  
+                        //tv.takerLoss                      = safeMul(safeSub(t.makerPrice, retrievePosition(t.takerInversePositionHash)[1]), tv.qty) / t.makerPrice; 
+                        tv.takerLoss                        = calculateLoss(t.makerPrice, retrievePosition(t.takerInversePositionHash)[1], tv.qty, futuresContractHash, true);                                  
                     }
 
                     updateBalances(
@@ -973,6 +989,58 @@ contract Exchange {
         return tv.qty;
     }
 
+    function calculateProfit(uint256 closingPrice, uint256 entryPrice, uint256 qty, bytes32 futuresContractHash, bool side) returns (uint256)
+    {
+        if (side)
+        {
+            return safeMul(safeSub(entryPrice, closingPrice), qty) / closingPrice; 
+        }
+        else
+        {
+            return safeMul(safeSub(closingPrice, entryPrice), qty) / closingPrice; 
+        }
+        
+    }
+
+    function calculateLoss(uint256 closingPrice, uint256 entryPrice, uint256 qty, bytes32 futuresContractHash, bool side) returns (uint256)
+    {
+        if (side)
+        {
+            return safeMul(safeSub(closingPrice, entryPrice), qty) / closingPrice;
+        }
+        else
+        {
+            return safeMul(safeSub(entryPrice, closingPrice), qty) / closingPrice; 
+        }
+        
+    }
+
+    function checkEnoughBalance (uint256 limitPrice, uint256 tradePrice, uint256 qty, bool side, uint256 fee, uint256 gasFee, bytes32 futuresContractHash, uint256 availableBalance) view returns (bool)
+    {
+        if (side)
+        {
+            // long
+            if (safeAdd(safeMul(safeSub(tradePrice, limitPrice), qty) / limitPrice, 
+                safeMul(qty, fee) / (1 ether)) * 1e10 > availableBalance)
+            {
+                return false; 
+            }
+        }
+        else
+        {
+            // short
+            if (safeAdd(safeAdd(safeMul(safeSub(limitPrice, tradePrice), qty)  / limitPrice, 
+                safeMul(qty, fee) / (1 ether)), gasFee / 1e10) * 1e10 > availableBalance)
+            {
+                return false;
+            }
+
+        }
+
+        return true;
+       
+    }
+
     // Executes multiple trades in one transaction, saves gas fees
     function batchFuturesTrade(
         uint8[2][] v,
@@ -981,7 +1049,7 @@ contract Exchange {
         address[2][] tradeAddresses,
         bool[] takerIsBuying,
         bytes32[] futuresContractHash
-    ) 
+    ) onlyAdmin
     {
         for (uint i = 0; i < tradeAddresses.length; i++) {
             futuresTrade(
@@ -1160,7 +1228,7 @@ contract Exchange {
 
     function positionExists (bytes32 positionHash) internal view returns (bool)
     {
-        LogUint(3,retrievePosition(positionHash)[0]);
+        //LogUint(3,retrievePosition(positionHash)[0]);
         if (retrievePosition(positionHash)[0] == 0)
         {
             return false;
@@ -1276,6 +1344,7 @@ contract Exchange {
         uint256 closingPrice;          // holds taker loss value
     }
 
+
     function closeFuturesPosition (bytes32 futuresContract, bool side)
     {
         bytes32 positionHash = keccak256(this, msg.sender, futuresContract, side);
@@ -1325,7 +1394,11 @@ contract Exchange {
             if (v.closingPrice > retrievePosition(positionHash)[1])
             {
                 // user made a profit
-                profit = safeMul(safeSub(v.closingPrice, retrievePosition(positionHash)[1]), retrievePosition(positionHash)[0]) / v.closingPrice;
+                //profit = safeMul(safeSub(v.closingPrice, retrievePosition(positionHash)[1]), retrievePosition(positionHash)[0]) / v.closingPrice;
+                profit = calculateProfit(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, false);
+                
+
+
                 // LogUint(15, profit);
                 // LogUint(16, fee);
                 // LogUint(17, safeSub(profit * 1e10, fee));
@@ -1338,7 +1411,10 @@ contract Exchange {
             else
             {
                 // user made a loss
-                loss = safeMul(safeSub(retrievePosition(positionHash)[1], v.closingPrice), retrievePosition(positionHash)[0]) / v.closingPrice;
+                //loss = safeMul(safeSub(retrievePosition(positionHash)[1], v.closingPrice), retrievePosition(positionHash)[0]) / v.closingPrice;
+                loss = calculateLoss(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, false);  
+
+
                 subBalance(baseToken, msg.sender, v.balance, safeAdd(loss * 1e10, fee));
                 //tokens[futuresContracts[futuresContract].baseToken][msg.sender] = safeSub(tokens[futuresContracts[futuresContract].baseToken][msg.sender], loss);
             }
@@ -1361,7 +1437,9 @@ contract Exchange {
             {
                 // user made a profit
                 // profit = (entryPrice - closingPrice) * size
-                profit = safeMul(safeSub(retrievePosition(positionHash)[1], v.closingPrice), retrievePosition(positionHash)[0]) / v.closingPrice;
+                // profit = safeMul(safeSub(retrievePosition(positionHash)[1], v.closingPrice), retrievePosition(positionHash)[0]) / v.closingPrice;
+                profit = calculateProfit(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, true);
+
                 addBalance(baseToken, msg.sender, v.balance, safeSub(profit * 1e10, fee));
 
                 //tokens[futuresContracts[futuresContract].baseToken][msg.sender] = safeAdd(tokens[futuresContracts[futuresContract].baseToken][msg.sender], profit);
@@ -1370,13 +1448,13 @@ contract Exchange {
             {
                 // user made a loss
                 // profit = (closingPrice - entryPrice) * size
-                loss = safeMul(safeSub(v.closingPrice, retrievePosition(positionHash)[1]), retrievePosition(positionHash)[0]) / v.closingPrice;
+                //loss = safeMul(safeSub(v.closingPrice, retrievePosition(positionHash)[1]), retrievePosition(positionHash)[0]) / v.closingPrice;
+                loss = calculateLoss(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, true);  
+
                 subBalance(baseToken, msg.sender, v.balance, safeAdd(loss * 1e10, fee));
 
                 //tokens[futuresContracts[futuresContract].baseToken][msg.sender] = safeSub(tokens[futuresContracts[futuresContract].baseToken][msg.sender], loss);
             }
-
-
         }  
 
         addBalance(baseToken, feeAccount, EtherMium(exchangeContract).balanceOf(baseToken, feeAccount), fee); // send fee to feeAccount
