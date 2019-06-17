@@ -76,6 +76,10 @@ contract Exchange {
     // Adds or disables a futuresContract address
     function setFuturesContract(address futuresContract, bool isFuturesContract) onlyOwner {
         futuresContracts[futuresContract] = isFuturesContract;
+        if (fistFuturesContract == address(0))
+        {
+            fistFuturesContract = futuresContract;
+        }
         emit SetFuturesContract(futuresContract, isFuturesContract);
     }
 
@@ -102,8 +106,11 @@ contract Exchange {
     mapping (address => uint256) public lastActiveTransaction; // mapping of user addresses to last transaction block
     mapping (bytes32 => uint256) public orderFills; // mapping of orders to filled qunatity
     
+    mapping (address => mapping (address => bool)) public userAllowedFuturesContracts; // mapping of allowed futures smart contracts per user
+
     address public feeAccount; // the account that receives the trading fees
     address public EtmTokenAddress; // the address of the EtherMium token
+    address public fistFuturesContract; // 0x if there are no futures contracts set yet
 
     uint256 public inactivityReleasePeriod; // period in blocks before a user can use the withdraw() function
     mapping (bytes32 => bool) public withdrawn; // mapping of withdraw requests, makes sure the same withdrawal is not executed twice
@@ -167,10 +174,10 @@ contract Exchange {
     }
 
     // Constructor function, initializes the contract and sets the core variables
-    function Exchange(address feeAccount_, uint256 makerFee_, uint256 takerFee_) {
+    function Exchange(address feeAccount_, uint256 makerFee_, uint256 takerFee_, uint256 inactivityReleasePeriod_) {
         owner = msg.sender;
         feeAccount = feeAccount_;
-        inactivityReleasePeriod = 100000;
+        inactivityReleasePeriod = inactivityReleasePeriod_;
         makerFee = makerFee_;
         takerFee = takerFee_;
     }
@@ -231,6 +238,14 @@ contract Exchange {
         return [balance, reserve];
     }
 
+    function futuresContractAllowed (address futuresContract, address user) returns (bool)
+    {
+        if (fistFuturesContract == futuresContract) return true;
+        if (userAllowedFuturesContracts[user][futuresContract] == true) return true;
+
+        return false;
+    }
+
     // Returns the balance of a specific token for a specific user
     function balanceOf(address token, address user) view returns (uint256) {
         //return tokens[token][user];
@@ -245,7 +260,7 @@ contract Exchange {
 
     // Sets reserved amount for specific token and user (can only be called by futures contract)
     function setReserve(address token, address user, uint256 amount) onlyFuturesContract returns (bool success) { 
-        //reserve[token][user] = amount; 
+        if (!futuresContractAllowed(msg.sender, user)) throw;
         if (availableBalanceOf(token, user) < amount) throw; 
         updateReserve(token, user, amount);
         return true; 
@@ -253,7 +268,7 @@ contract Exchange {
 
     // Updates user balance (only can be used by futures contract)
     function setBalance(address token, address user, uint256 amount) onlyFuturesContract returns (bool success)     {
-        //tokens[token][user] = amount; 
+        if (!futuresContractAllowed(msg.sender, user)) throw;
         updateBalance(token, user, amount);
         return true;
         
@@ -261,19 +276,19 @@ contract Exchange {
 
     function subBalanceAddReserve(address token, address user, uint256 subBalance, uint256 addReserve) onlyFuturesContract returns (bool)
     {
+        if (!futuresContractAllowed(msg.sender, user)) throw;
         updateBalanceAndReserve(token, user, safeSub(balanceOf(token, user), subBalance), safeAdd(getReserve(token, user), addReserve));
     }
 
     function addBalanceSubReserve(address token, address user, uint256 addBalance, uint256 subReserve) onlyFuturesContract returns (bool)
     {
+        if (!futuresContractAllowed(msg.sender, user)) throw;
         updateBalanceAndReserve(token, user, safeAdd(balanceOf(token, user), addBalance), safeSub(getReserve(token, user), subReserve));
     }
 
     function subBalanceSubReserve(address token, address user, uint256 subBalance, uint256 subReserve) onlyFuturesContract returns (bool)
     {
-        // LogUint(21, getReserve(token, user));
-        // LogUint(22, subReserve);
-        // return true;
+        if (!futuresContractAllowed(msg.sender, user)) throw;
         updateBalanceAndReserve(token, user, safeSub(balanceOf(token, user), subBalance), safeSub(getReserve(token, user), subReserve));
     }
 
@@ -346,6 +361,12 @@ contract Exchange {
             if (!Token(token).transfer(msg.sender, amount)) throw; // Send token
         }
         emit Withdraw(token, msg.sender, amount, balanceOf(token, msg.sender), 0); // fires the Withdraw event
+    }
+
+    function userAllowFuturesContract(address futuresContract)
+    {
+        if (!futuresContracts[futuresContract]) throw;
+        userAllowedFuturesContracts[msg.sender][futuresContract] = true;
     }
 
     // Withdrawal function used by the server to execute withdrawals
