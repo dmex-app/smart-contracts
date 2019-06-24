@@ -44,7 +44,8 @@ contract Exchange {
 
     address public owner; // holds the address of the contract owner
     mapping (address => bool) public admins; // mapping of admin addresses
-    mapping (address => bool) public futuresContracts; // mapping of connectef futures contracts
+    mapping (address => bool) public futuresContracts; // mapping of connected futures contracts
+    mapping (address => uint256) public futuresContractsAddedBlock; // mapping of connected futures contracts and connection block numbers
     event SetFuturesContract(address futuresContract, bool isFuturesContract);
 
     // Event fired when the owner of the contract is changed
@@ -80,6 +81,7 @@ contract Exchange {
         {
             fistFuturesContract = futuresContract;
         }
+        futuresContractsAddedBlock[futuresContract] = block.number;
         emit SetFuturesContract(futuresContract, isFuturesContract);
     }
 
@@ -107,6 +109,7 @@ contract Exchange {
     mapping (bytes32 => uint256) public orderFills; // mapping of orders to filled qunatity
     
     mapping (address => mapping (address => bool)) public userAllowedFuturesContracts; // mapping of allowed futures smart contracts per user
+    mapping (address => uint256) public userFirstDeposits; // mapping of user addresses and block number of first deposit
 
     address public feeAccount; // the account that receives the trading fees
     address public EtmTokenAddress; // the address of the EtherMium token
@@ -193,16 +196,7 @@ contract Exchange {
 
     
 
-    // Deposit token to contract
-    function depositToken(address token, uint128 amount) {
-        //tokens[token][msg.sender] = safeAdd(tokens[token][msg.sender], amount); // adds the deposited amount to user balance
-        //if (amount != uint128(amount) || safeAdd(amount, balanceOf(token, msg.sender)) != uint128(amount)) throw;
-        addBalance(token, msg.sender, amount); // adds the deposited amount to user balance
 
-        lastActiveTransaction[msg.sender] = block.number; // sets the last activity block for the user
-        if (!Token(token).transferFrom(msg.sender, this, amount)) throw; // attempts to transfer the token to this contract, if fails throws an error
-        emit Deposit(token, msg.sender, amount, balanceOf(token, msg.sender)); // fires the deposit event
-    }
 
     function updateBalanceAndReserve (address token, address user, uint256 balance, uint256 reserve) private
     {
@@ -242,6 +236,7 @@ contract Exchange {
     {
         if (fistFuturesContract == futuresContract) return true;
         if (userAllowedFuturesContracts[user][futuresContract] == true) return true;
+        if (futuresContractsAddedBlock[futuresContract] < userFirstDeposits[user]) return true;
 
         return false;
     }
@@ -304,13 +299,13 @@ contract Exchange {
     }
 
     // Increases the user balance
-    function addBalance(address token, address user, uint256 amount)
+    function addBalance(address token, address user, uint256 amount) private
     {
         updateBalance(token, user, safeAdd(balanceOf(token, user), amount));
     }
 
     // Decreases user balance
-    function subBalance(address token, address user, uint256 amount)
+    function subBalance(address token, address user, uint256 amount) private
     {
         if (availableBalanceOf(token, user) < amount) throw; 
         updateBalance(token, user, safeSub(balanceOf(token, user), amount));
@@ -321,30 +316,21 @@ contract Exchange {
     function deposit() payable {
         //tokens[address(0)][msg.sender] = safeAdd(tokens[address(0)][msg.sender], msg.value); // adds the deposited amount to user balance
         addBalance(address(0), msg.sender, msg.value); // adds the deposited amount to user balance
-
+        if (userFirstDeposits[msg.sender] == 0) userFirstDeposits[msg.sender] = block.number;
         lastActiveTransaction[msg.sender] = block.number; // sets the last activity block for the user
         emit Deposit(address(0), msg.sender, msg.value, balanceOf(address(0), msg.sender)); // fires the deposit event
     }
 
-    // Deposit token to a destination user balance
-    function depositTokenFor(address token, uint128 amount, address destinationUser)  returns (bool success) {
-        //tokens[token][destinationUser] = safeAdd(tokens[token][destinationUser], amount); // adds the deposited amount to user balance
-        addBalance(token, destinationUser, amount); // adds the deposited amount to user balance
+    // Deposit token to contract
+    function depositToken(address token, uint128 amount) {
+        //tokens[token][msg.sender] = safeAdd(tokens[token][msg.sender], amount); // adds the deposited amount to user balance
+        //if (amount != uint128(amount) || safeAdd(amount, balanceOf(token, msg.sender)) != uint128(amount)) throw;
+        addBalance(token, msg.sender, amount); // adds the deposited amount to user balance
 
-        lastActiveTransaction[destinationUser] = block.number; // sets the last activity block for the user
+        if (userFirstDeposits[msg.sender] == 0) userFirstDeposits[msg.sender] = block.number;
+        lastActiveTransaction[msg.sender] = block.number; // sets the last activity block for the user
         if (!Token(token).transferFrom(msg.sender, this, amount)) throw; // attempts to transfer the token to this contract, if fails throws an error
-        emit Deposit(token, destinationUser, amount, balanceOf(token, destinationUser)); // fires the deposit event
-        return true;
-    }
-
-    // Deposit ETH to a destination user balance
-    function depositFor(address destinationUser) payable  returns (bool success) {
-        //okens[address(0)][destinationUser] = safeAdd(tokens[address(0)][destinationUser], msg.value); // adds the deposited amount to user balance
-        addBalance(address(0), destinationUser, msg.value); // adds the deposited amount to user balance
-
-        lastActiveTransaction[destinationUser] = block.number; // sets the last activity block for the user
-        emit Deposit(address(0), destinationUser, msg.value, balanceOf(address(0), destinationUser)); // fires the deposit event
-        return true;
+        emit Deposit(token, msg.sender, amount, balanceOf(token, msg.sender)); // fires the deposit event
     }
 
     function withdraw(address token, uint256 amount) returns (bool success) {
@@ -483,7 +469,7 @@ contract Exchange {
         bytes32[4] rs,
         uint256[8] tradeValues,
         address[6] tradeAddresses
-    ) returns (uint filledTakerTokenAmount)
+    ) onlyAdmin returns (uint filledTakerTokenAmount)
     {
 
         /* tradeValues
@@ -716,7 +702,7 @@ contract Exchange {
         bytes32[4][] rs,
         uint256[8][] tradeValues,
         address[6][] tradeAddresses
-    ) 
+    ) onlyAdmin
     {
         for (uint i = 0; i < tradeAddresses.length; i++) {
             trade(
@@ -760,7 +746,7 @@ contract Exchange {
 		[3] cancelUser
 		*/
 		address[4] cancelAddresses
-    ) public {
+    ) onlyAdmin {
         // Order values should be valid and signed by order owner
         bytes32 orderHash = keccak256(
 	        this, cancelAddresses[0], cancelValues[0], cancelAddresses[1],
