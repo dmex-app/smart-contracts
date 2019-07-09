@@ -148,6 +148,10 @@ contract Exchange {
     // Fee change event
     event FeeChange(uint256 indexed makerFee, uint256 indexed takerFee);
 
+    // Allow futuresContract 
+    event AllowFuturesContract(address futuresContract, address user);
+
+
     // Log event, logs errors in contract execution (used for debugging)
     event LogError(uint8 indexed errorId, bytes32 indexed makerOrderHash, bytes32 indexed takerOrderHash);
     event LogUint(uint8 id, uint256 value);
@@ -261,7 +265,6 @@ contract Exchange {
         return true; 
     }
 
-    // Updates user balance (only can be used by futures contract)
     function setBalance(address token, address user, uint256 amount) onlyFuturesContract returns (bool success)     {
         if (!futuresContractAllowed(msg.sender, user)) throw;
         updateBalance(token, user, amount);
@@ -353,7 +356,33 @@ contract Exchange {
     {
         if (!futuresContracts[futuresContract]) throw;
         userAllowedFuturesContracts[msg.sender][futuresContract] = true;
+
+        emit AllowFuturesContract(futuresContract, msg.sender);
     }
+
+    function allowFuturesContractForUser(address futuresContract, address user, uint8 v, bytes32 r, bytes32 s) onlyAdmin
+    {
+        if (!futuresContracts[futuresContract]) throw;
+        bytes32 hash = keccak256(this, futuresContract); 
+        if (ecrecover(keccak256("\x19Ethereum Signed Message:\n32", hash), v, r, s) != user) throw; // checks that the provided signature is valid
+        userAllowedFuturesContracts[user][futuresContract] = true;
+
+        emit AllowFuturesContract(futuresContract, user);
+    }
+
+    function allowFuturesContractForUserByFuturesContract(address user, uint8 v, bytes32 r, bytes32 s) onlyFuturesContract returns (bool)
+    {
+        if (!futuresContracts[msg.sender]) return false;
+        bytes32 hash = keccak256(this, msg.sender); 
+        if (ecrecover(keccak256("\x19Ethereum Signed Message:\n32", hash), v, r, s) != user) return false; // checks that the provided signature is valid
+        userAllowedFuturesContracts[user][msg.sender] = true;
+
+        emit AllowFuturesContract(msg.sender, user);
+
+        return true;
+    }
+
+    
 
     // Withdrawal function used by the server to execute withdrawals
     function adminWithdraw(
@@ -547,9 +576,9 @@ contract Exchange {
         // Checks that the prices match.
         // Taker always pays the maker price. This part checks that the taker price is as good or better than the maker price
         if (!(
-        (t.takerIsBuying == 0 && safeMul(t.makerAmountSell, 1 ether) / t.makerAmountBuy >= safeMul(t.takerAmountBuy, 1 ether) / t.takerAmountSell)
+        (t.takerIsBuying == 0 && safeMul(t.makerAmountSell, 1e18) / t.makerAmountBuy >= safeMul(t.takerAmountBuy, 1e18) / t.takerAmountSell)
         ||
-        (t.takerIsBuying > 0 && safeMul(t.makerAmountBuy, 1 ether) / t.makerAmountSell <= safeMul(t.takerAmountSell, 1 ether) / t.takerAmountBuy)
+        (t.takerIsBuying > 0 && safeMul(t.makerAmountBuy, 1e18) / t.makerAmountSell <= safeMul(t.takerAmountSell, 1e18) / t.takerAmountBuy)
         ))
         {
             emit LogError(uint8(Errors.INVLID_PRICE), t.makerOrderHash, t.takerOrderHash);
@@ -581,16 +610,16 @@ contract Exchange {
 
            
             // take fee from Token balance
-            tv.makerAmountTaken                         = safeSub(tv.qty, safeMul(tv.qty, makerFee) / (1 ether));                                       // net amount received by maker, excludes maker fee
+            tv.makerAmountTaken                         = safeSub(tv.qty, safeMul(tv.qty, makerFee) / (1e18));                                       // net amount received by maker, excludes maker fee
             //tokens[t.makerTokenBuy][feeAccount]         = safeAdd(tokens[t.makerTokenBuy][feeAccount],      safeMul(tv.qty, makerFee) / (1 ether));     // add maker fee to feeAccount
-            addBalance(t.makerTokenBuy, feeAccount, safeMul(tv.qty, makerFee) / (1 ether)); // add maker fee to feeAccount
+            addBalance(t.makerTokenBuy, feeAccount, safeMul(tv.qty, makerFee) / (1e18)); // add maker fee to feeAccount
         
 
         
             // take fee from Token balance
-            tv.takerAmountTaken                         = safeSub(safeSub(tv.invQty, safeMul(tv.invQty, takerFee) / (1 ether)), safeMul(tv.invQty, t.takerGasFee) / (1 ether));                             // amount taken from taker minus taker fee
+            tv.takerAmountTaken                         = safeSub(safeSub(tv.invQty, safeMul(tv.invQty, takerFee) / (1e18)), safeMul(tv.invQty, t.takerGasFee) / (1e18));                             // amount taken from taker minus taker fee
             //tokens[t.takerTokenBuy][feeAccount]         = safeAdd(tokens[t.takerTokenBuy][feeAccount], safeAdd(safeMul(tv.invQty, takerFee) / (1 ether), safeMul(tv.invQty, t.takerGasFee) / (1 ether)));   // add taker fee to feeAccount
-            addBalance(t.takerTokenBuy, feeAccount, safeAdd(safeMul(tv.invQty, takerFee) / (1 ether), safeMul(tv.invQty, t.takerGasFee) / (1 ether))); // add taker fee to feeAccount
+            addBalance(t.takerTokenBuy, feeAccount, safeAdd(safeMul(tv.invQty, takerFee) / (1e18), safeMul(tv.invQty, t.takerGasFee) / (1e18))); // add taker fee to feeAccount
 
 
             //tokens[t.makerTokenSell][t.maker]           = safeSub(tokens[t.makerTokenSell][t.maker],           tv.invQty);                              // subtract sold token amount from maker balance
@@ -642,17 +671,17 @@ contract Exchange {
             
            
             // take fee from ETH balance
-            tv.makerAmountTaken                         = safeSub(tv.invQty, safeMul(tv.invQty, makerFee) / (1 ether));                                 // net amount received by maker, excludes maker fee
+            tv.makerAmountTaken                         = safeSub(tv.invQty, safeMul(tv.invQty, makerFee) / 1e18);                                 // net amount received by maker, excludes maker fee
             //tokens[t.makerTokenBuy][feeAccount]         = safeAdd(tokens[t.makerTokenBuy][feeAccount],      safeMul(tv.invQty, makerFee) / (1 ether));  // add maker fee to feeAccount
-            addBalance(t.makerTokenBuy, feeAccount, safeMul(tv.invQty, makerFee) / (1 ether)); // add maker fee to feeAccount
+            addBalance(t.makerTokenBuy, feeAccount, safeMul(tv.invQty, makerFee) / 1e18); // add maker fee to feeAccount
      
 
             // process fees for taker
             
             // take fee from ETH balance
-            tv.takerAmountTaken                         = safeSub(safeSub(tv.qty, safeMul(tv.qty, takerFee) / (1 ether)), safeMul(tv.qty, t.takerGasFee) / (1 ether));                                  // amount taken from taker minus taker fee
+            tv.takerAmountTaken                         = safeSub(safeSub(tv.qty, safeMul(tv.qty, takerFee) / 1e18), safeMul(tv.qty, t.takerGasFee) / 1e18);                                  // amount taken from taker minus taker fee
             //tokens[t.takerTokenBuy][feeAccount]         = safeAdd(tokens[t.takerTokenBuy][feeAccount], safeAdd(safeMul(tv.qty, takerFee) / (1 ether), safeMul(tv.qty, t.takerGasFee) / (1 ether)));     // add taker fee to feeAccount
-            addBalance(t.takerTokenBuy, feeAccount, safeAdd(safeMul(tv.qty, takerFee) / (1 ether), safeMul(tv.qty, t.takerGasFee) / (1 ether))); // add taker fee to feeAccount
+            addBalance(t.takerTokenBuy, feeAccount, safeAdd(safeMul(tv.qty, takerFee) / 1e18, safeMul(tv.qty, t.takerGasFee) / 1e18)); // add taker fee to feeAccount
 
 
 
