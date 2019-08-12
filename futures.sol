@@ -17,7 +17,7 @@ contract Token {
 }
 
 /* Interface for the DMEX base contract */
-contract EtherMium {
+contract DMEX_Base {
     function getReserve(address token, address user) returns (uint256);
     function setReserve(address token, address user, uint256 amount) returns (bool);
 
@@ -102,7 +102,7 @@ contract Exchange {
     mapping (bytes32 => uint256) public orderFills;             // mapping of orders to filled qunatity
     
     address public feeAccount;          // the account that receives the trading fees
-    address public exchangeContract;    // the address of the main EtherMium contract
+    address public exchangeContract;    // the address of the main DMEX_Base contract
     address public DmexOracleContract;    // the address of the DMEX math contract used for some calculations
 
     uint256 public makerFee;            // maker fee in percent expressed as a fraction of 1 ether (0.1 ETH = 10%)
@@ -113,13 +113,12 @@ contract Exchange {
         address baseToken;              // the token for collateral
         string priceUrl;                // the url where the price of the asset will be taken for settlement
         string pricePath;               // price path in the returned JSON from the priceUrl (ex. path "last" will return tha value last from the json: {"high": "156.49", "last": "154.31", "timestamp": "1556522201", "bid": "154.22", "vwap": "154.65", "volume": "25578.79138868", "low": "152.33", "ask": "154.26", "open": "152.99"})
-        bool inversed;                  // if true, the price from the priceUrl will be inversed (i.e price = 1/priceUrl)
         bool disabled;                  // if true, the asset cannot be used in contract creation (when price url no longer valid)
     }
 
-    function createFuturesAsset(string name, address baseToken, string priceUrl, string pricePath, bool inversed) onlyAdmin returns (bytes32)
+    function createFuturesAsset(string name, address baseToken, string priceUrl, string pricePath) onlyAdmin returns (bytes32)
     {    
-        bytes32 futuresAsset = keccak256(this, name, baseToken, priceUrl, pricePath, inversed);
+        bytes32 futuresAsset = keccak256(this, name, baseToken, priceUrl, pricePath);
         if (futuresAssets[futuresAsset].disabled) throw; // asset already exists and is disabled
 
         futuresAssets[futuresAsset] = FuturesAsset({
@@ -127,11 +126,10 @@ contract Exchange {
             baseToken           : baseToken,
             priceUrl            : priceUrl,
             pricePath           : pricePath,
-            inversed            : inversed,
             disabled            : false
         });
 
-        emit FuturesAssetCreated(futuresAsset, name, baseToken, priceUrl, pricePath, inversed);
+        emit FuturesAssetCreated(futuresAsset, name, baseToken, priceUrl, pricePath);
         return futuresAsset;
     }
     
@@ -139,16 +137,16 @@ contract Exchange {
         bytes32 asset;                  // the hash of the underlying asset object
         uint256 expirationBlock;        // futures contract expiration block
         uint256 closingPrice;           // the closing price for the futures contract
-        bool closed;                    // is the futures contract closed (0 - false, 1 - true)
+        bool closed;                    // is the futures contract closed (0 - false, 1 - true)c
         bool broken;                    // if someone has forced release of funds the contract is marked as broken and can no longer close positions (0-false, 1-true)
         uint256 floorPrice;             // the minimum price that can be traded on the contract, once price is reached the contract expires and enters settlement state 
         uint256 capPrice;               // the maximum price that can be traded on the contract, once price is reached the contract expires and enters settlement state
-        uint256 multiplier;             // the multiplier price, used when teh trading pair doesn't have the base token in it (eg. BTCUSD with ETH as base token, multiplier will be the ETHBTC price)
+        uint256 multiplier;             // the multiplier price, normally the ETHUSD price * 1e18c
     }
 
-    function createFuturesContract(bytes32 asset, uint256 expirationBlock, uint256 floorPrice, uint256 capPrice, uint256 multiplier) onlyAdmin returns (bytes32)
+    function createFuturesContract(bytes32 asset, uint256 expirationBlock, uint256 floorPrice, uint256 capPrice, uint256 multiplier, uint256 fundingRate) onlyAdmin returns (bytes32)
     {    
-        bytes32 futuresContract = keccak256(this, asset, expirationBlock, floorPrice, capPrice, multiplier);
+        bytes32 futuresContract = keccak256(this, asset, expirationBlock, floorPrice, capPrice, multiplier, fundingRate);
         if (futuresContracts[futuresContract].expirationBlock > 0) return futuresContract; // contract already exists
 
         futuresContracts[futuresContract] = FuturesContract({
@@ -159,7 +157,8 @@ contract Exchange {
             broken          : false,
             floorPrice      : floorPrice,
             capPrice        : capPrice,
-            multiplier      : multiplier
+            multiplier      : multiplier,
+            fundingRate     : fundingRate
         });
 
         emit FuturesContractCreated(futuresContract, asset, expirationBlock, floorPrice, capPrice, multiplier);
@@ -206,10 +205,10 @@ contract Exchange {
     }
 
     event FuturesTrade(bool side, uint256 size, uint256 price, bytes32 indexed futuresContract, bytes32 indexed makerOrderHash, bytes32 indexed takerOrderHash);
-    event FuturesPositionClosed(bytes32 positionHash);
+    event FuturesPositionClosed(bytes32 indexed positionHash, uint256 closingPrice);
     event FuturesContractClosed(bytes32 indexed futuresContract, uint256 closingPrice);
     event FuturesForcedRelease(bytes32 indexed futuresContract, bool side, address user);
-    event FuturesAssetCreated(bytes32 indexed futuresAsset, string name, address baseToken, string priceUrl, string pricePath, bool inversed);
+    event FuturesAssetCreated(bytes32 indexed futuresAsset, string name, address baseToken, string priceUrl, string pricePath);
     event FuturesContractCreated(bytes32 indexed futuresContract, bytes32 asset, uint256 expirationBlock, uint256 floorPrice, uint256 capPrice, uint256 multiplier);
  
     // Fee change event
@@ -425,7 +424,7 @@ contract Exchange {
          
         
 
-        uint256[4] memory balances = EtherMium(exchangeContract).getMakerTakerBalances(t.baseToken, t.maker, t.taker);
+        uint256[4] memory balances = DMEX_Base(exchangeContract).getMakerTakerBalances(t.baseToken, t.maker, t.taker);
 
         // Initializing trade values structure 
         FuturesTradeValues memory tv = FuturesTradeValues({
@@ -434,10 +433,10 @@ contract Exchange {
             makerLoss           : 0,
             takerProfit         : 0,
             takerLoss           : 0,
-            makerBalance        : balances[0], //EtherMium(exchangeContract).balanceOf(t.baseToken, t.maker),
-            takerBalance        : balances[1],  //EtherMium(exchangeContract).balanceOf(t.baseToken, t.maker),
-            makerReserve        : balances[2],  //EtherMium(exchangeContract).balanceOf(t.baseToken, t.maker),
-            takerReserve        : balances[3]  //EtherMium(exchangeContract).balanceOf(t.baseToken, t.maker),
+            makerBalance        : balances[0], 
+            takerBalance        : balances[1],  
+            makerReserve        : balances[2],  
+            takerReserve        : balances[3] 
         });
 
 //--> 60 000
@@ -491,14 +490,6 @@ contract Exchange {
         } // takerGasFee too high
 
 
-        // check if users have open positions already
-        // if (positionExists(t.makerPositionHash) || positionExists(t.takerPositionHash))
-        // {
-        //     // maker already has the position open, first must close existing position before opening a new one
-        //     emit LogError(uint8(Errors.POSITION_ALREADY_EXISTS), t.makerOrderHash, t.takerOrderHash);
-        //     return 0; 
-        // }
-
 //--> 66 000
         
 
@@ -515,7 +506,6 @@ contract Exchange {
 
 
                 // check if maker has enough balance   
-                
                 if (!checkEnoughBalance(t.floorPrice, t.makerPrice, tv.qty, true, makerFee, 0, futuresContractHash, safeSub(balances[0],tv.makerReserve)))
                 {
                     // maker out of balance
@@ -559,8 +549,6 @@ contract Exchange {
                 if (positionExists(t.makerPositionHash))
                 {
                     // check if maker has enough balance            
-                    // if (safeAdd(safeMul(safeSub(t.makerPrice, t.floorPrice), tv.qty) / t.floorPrice, 
-                    //     safeMul(tv.qty, makerFee) / (1 ether)) * 1e10 > safeSub(balances[0],tv.makerReserve))
                     if (!checkEnoughBalance(t.floorPrice, t.makerPrice, tv.qty, true, makerFee, 0, futuresContractHash, safeSub(balances[0],tv.makerReserve)))
                     {
                         // maker out of balance
@@ -616,9 +604,6 @@ contract Exchange {
                         tv.makerLoss                        = calculateLoss(t.makerPrice, retrievePosition(t.makerInversePositionHash)[1], tv.qty, futuresContractHash, true);                                        
                     }
 
-
-
-
                     updateBalances(
                         t.futuresContract, 
                         [
@@ -653,7 +638,6 @@ contract Exchange {
             {
                 
                 // check if taker has enough balance
-                // if (safeAdd(safeAdd(safeMul(safeSub(t.capPrice, t.makerPrice), tv.qty)  / t.capPrice, safeMul(tv.qty, takerFee) / (1 ether))  * 1e10, t.takerGasFee) > safeSub(balances[1],tv.takerReserve))
                 if (!checkEnoughBalance(t.capPrice, t.makerPrice, tv.qty, false, takerFee, t.takerGasFee, futuresContractHash, safeSub(balances[1],tv.takerReserve)))
                 {
                     // maker out of balance
@@ -728,27 +712,18 @@ contract Exchange {
                     );
                 }
                 else
-                {   
-
-
-                     
-                   
-
+                {    
                     // close/partially close existing position
                     updatePositionSize(t.takerInversePositionHash, safeSub(retrievePosition(t.takerInversePositionHash)[0], tv.qty), 0);
                     
-
-
                     if (t.makerPrice > retrievePosition(t.takerInversePositionHash)[1])
                     {
                         // user has made a profit
-                        //tv.takerProfit                    = safeMul(safeSub(t.makerPrice, retrievePosition(t.takerInversePositionHash)[1]), tv.qty) / t.makerPrice;
                         tv.takerProfit                      = calculateProfit(t.makerPrice, retrievePosition(t.takerInversePositionHash)[1], tv.qty, futuresContractHash, false);
                     }
                     else
                     {
                         // user has made a loss
-                        //tv.takerLoss                      = safeMul(safeSub(retrievePosition(t.takerInversePositionHash)[1], t.makerPrice), tv.qty) / t.makerPrice;                                  
                         tv.takerLoss                        = calculateLoss(t.makerPrice, retrievePosition(t.takerInversePositionHash)[1], tv.qty, futuresContractHash, false); 
                     }
 
@@ -786,13 +761,10 @@ contract Exchange {
 
         else
         {      
-            //LogUint(1, safeMul(safeSub(t.makerPrice, t.floorPrice), tv.qty)); return;
-
             // position actions for maker
             if (!positionExists(t.makerInversePositionHash) && !positionExists(t.makerPositionHash))
             {
                 // check if maker has enough balance
-                //if (safeAdd(safeMul(safeSub(t.makerPrice, t.floorPrice), tv.qty) / t.floorPrice, safeMul(tv.qty, makerFee) / (1 ether)) * 1e10 > safeSub(balances[0],tv.makerReserve))
                 if (!checkEnoughBalance(t.capPrice, t.makerPrice, tv.qty, false, makerFee, 0, futuresContractHash, safeSub(balances[0],tv.makerReserve)))
                 {
                     // maker out of balance
@@ -830,7 +802,6 @@ contract Exchange {
                 if (positionExists(t.makerPositionHash))
                 {
                     // check if maker has enough balance
-                    //if (safeAdd(safeMul(safeSub(t.makerPrice, t.floorPrice), tv.qty) / t.floorPrice, safeMul(tv.qty, makerFee) / (1 ether)) * 1e10 > safeSub(balances[0],tv.makerReserve))
                     if (!checkEnoughBalance(t.capPrice, t.makerPrice, tv.qty, false, makerFee, 0, futuresContractHash, safeSub(balances[0],tv.makerReserve)))
                     {
                         // maker out of balance
@@ -876,13 +847,11 @@ contract Exchange {
                     if (t.makerPrice > retrievePosition(t.makerInversePositionHash)[1])
                     {
                         // user has made a profit
-                        //tv.makerProfit                    = safeMul(safeSub(t.makerPrice, retrievePosition(t.makerInversePositionHash)[1]), tv.qty) / t.makerPrice;
                         tv.makerProfit                      = calculateProfit(t.makerPrice, retrievePosition(t.makerInversePositionHash)[1], tv.qty, futuresContractHash, false);
                     }
                     else
                     {
                         // user has made a loss
-                        //tv.makerLoss                      = safeMul(safeSub(retrievePosition(t.makerInversePositionHash)[1], t.makerPrice), tv.qty) / t.makerPrice; 
                         tv.makerLoss                        = calculateLoss(t.makerPrice, retrievePosition(t.makerInversePositionHash)[1], tv.qty, futuresContractHash, false);                               
                     }
 
@@ -918,7 +887,6 @@ contract Exchange {
             if (!positionExists(t.takerInversePositionHash) && !positionExists(t.takerPositionHash))
             {
                 // check if taker has enough balance
-                // if (safeAdd(safeAdd(safeMul(safeSub(t.capPrice, t.makerPrice), tv.qty)  / t.capPrice, safeMul(tv.qty, takerFee) / (1 ether)), t.takerGasFee / 1e10) * 1e10 > safeSub(balances[1],tv.takerReserve))
                 if (!checkEnoughBalance(t.floorPrice, t.makerPrice, tv.qty, true, takerFee, t.takerGasFee, futuresContractHash, safeSub(balances[1],tv.takerReserve)))
                 {
                     // maker out of balance
@@ -957,7 +925,6 @@ contract Exchange {
                 if (positionExists(t.takerPositionHash))
                 {
                     // check if taker has enough balance
-                    //if (safeAdd(safeAdd(safeMul(safeSub(t.capPrice, t.makerPrice), tv.qty)  / t.capPrice, safeMul(tv.qty, takerFee) / (1 ether)), t.takerGasFee / 1e10) * 1e10 > safeSub(balances[1],tv.takerReserve))
                     if (!checkEnoughBalance(t.floorPrice, t.makerPrice, tv.qty, true, takerFee, t.takerGasFee, futuresContractHash, safeSub(balances[1],tv.takerReserve)))
                     {
                         // maker out of balance
@@ -1001,13 +968,11 @@ contract Exchange {
                     if (t.makerPrice < retrievePosition(t.takerInversePositionHash)[1])
                     {
                         // user has made a profit
-                        //tv.takerProfit                    = safeMul(safeSub(retrievePosition(t.takerInversePositionHash)[1], t.makerPrice), tv.qty) / t.makerPrice;
                         tv.takerProfit                      = calculateProfit(t.makerPrice, retrievePosition(t.takerInversePositionHash)[1], tv.qty, futuresContractHash, true);
                     }
                     else
                     {
                         // user has made a loss
-                        //tv.takerLoss                      = safeMul(safeSub(t.makerPrice, retrievePosition(t.takerInversePositionHash)[1]), tv.qty) / t.makerPrice; 
                         tv.takerLoss                        = calculateLoss(t.makerPrice, retrievePosition(t.takerInversePositionHash)[1], tv.qty, futuresContractHash, true);                                  
                     }
 
@@ -1053,109 +1018,71 @@ contract Exchange {
 
     function calculateProfit(uint256 closingPrice, uint256 entryPrice, uint256 qty, bytes32 futuresContractHash, bool side) returns (uint256)
     {
-        bool inversed = futuresAssets[futuresContracts[futuresContractHash].asset].inversed;
         uint256 multiplier = futuresContracts[futuresContractHash].multiplier;
 
         if (side)
-        {
-            if (inversed)
-            {
-                return safeMul(safeSub(entryPrice, closingPrice), qty) / closingPrice;  
-            }
-            else
-            {
-                return safeMul(safeMul(safeSub(entryPrice, closingPrice), qty), multiplier)  / 1e8 / 1e18;
-            }
-            
+        {           
+            return safeMul(safeMul(safeSub(entryPrice, closingPrice), qty), multiplier)  / 1e8 / 1e18;            
         }
         else
         {
-            if (inversed)
-            {
-                return safeMul(safeSub(closingPrice, entryPrice), qty) / closingPrice; 
-            }
-            else
-            {
-                return safeMul(safeMul(safeSub(closingPrice, entryPrice), qty), multiplier)  / 1e8 / 1e18; 
-            }
+            return safeMul(safeMul(safeSub(closingPrice, entryPrice), qty), multiplier)  / 1e8 / 1e18; 
         }       
     }
 
     function calculateTradeValue(uint256 qty, uint256 price, bytes32 futuresContractHash) returns (uint256)
     {
-        bool inversed = futuresAssets[futuresContracts[futuresContractHash].asset].inversed;
         uint256 multiplier = futuresContracts[futuresContractHash].multiplier;
-        if (inversed)
-        {
-            return qty * 1e10;
-        }
-        else
-        {
-            return safeMul(safeMul(safeMul(qty, price), 1e2), multiplier) / 1e18 ;
-        }
+        return safeMul(safeMul(safeMul(qty, price), 1e2), multiplier) / 1e18 ;
     }
 
 
 
     function calculateLoss(uint256 closingPrice, uint256 entryPrice, uint256 qty,  bytes32 futuresContractHash, bool side) returns (uint256)
     {
-        bool inversed = futuresAssets[futuresContracts[futuresContractHash].asset].inversed;
         uint256 multiplier = futuresContracts[futuresContractHash].multiplier;
 
         if (side)
         {
-            if (inversed)
-            {
-                return safeMul(safeSub(closingPrice, entryPrice), qty) / closingPrice;
-            }
-            else
-            {
-                return safeMul(safeMul(safeSub(closingPrice, entryPrice), qty), multiplier) / 1e8 / 1e18;
-            }
+            return safeMul(safeMul(safeSub(closingPrice, entryPrice), qty), multiplier) / 1e8 / 1e18;
         }
         else
         {
-            if (inversed)
-            {
-                return safeMul(safeSub(entryPrice, closingPrice), qty) / closingPrice;
-            }
-            else
-            {
-                return safeMul(safeMul(safeSub(entryPrice, closingPrice), qty), multiplier) / 1e8 / 1e18;
-            } 
+            return safeMul(safeMul(safeSub(entryPrice, closingPrice), qty), multiplier) / 1e8 / 1e18; 
         }
         
     }
 
     function calculateCollateral (uint256 limitPrice, uint256 tradePrice, uint256 qty, bool side, bytes32 futuresContractHash) view returns (uint256)
     {
-        bool inversed = futuresAssets[futuresContracts[futuresContractHash].asset].inversed;
         uint256 multiplier = futuresContracts[futuresContractHash].multiplier;
+        uint256 fundingCost;
+        uint256 collateral;
 
         if (side)
-        {
-            // long
-            if (inversed)
-            {
-                return safeMul(safeSub(tradePrice, limitPrice), qty) / limitPrice;
-            }
-            else
-            {
-                return safeMul(safeMul(safeSub(tradePrice, limitPrice), qty), multiplier) / 1e8 / 1e18;
-            }
+        {    
+            //fundingCost = calculateFundingCost(tradePrice, qty, fundingBlocks, futuresContractHash);
+            collateral = safeMul(safeMul(safeSub(tradePrice, limitPrice), qty), multiplier) / 1e8 / 1e18;
+
+            return collateral; //safeAdd(collateral, fundingCost);
         }
         else
         {
-            // short
-            if (inversed)
-            {
-                return safeMul(safeSub(limitPrice, tradePrice), qty)  / limitPrice;
-            }
-            else
-            {
-                return safeMul(safeMul(safeSub(limitPrice, tradePrice), qty), multiplier) / 1e8 / 1e18;
-            }
+            //fundingCost = calculateFundingCost(tradePrice, qty, fundingBlocks, futuresContractHash);
+            collateral = safeMul(safeMul(safeSub(limitPrice, tradePrice), qty), multiplier) / 1e8 / 1e18;
+            
+            return collateral; // safeAdd(collateral, fundingCost);
         }         
+    }
+
+    function calculateFundingCost (uint256 price, uint256 qty, uint256 fundingBlocks, bytes32 futuresContractHash) returns (uint256)
+    {
+        uint256 fundingRate = futuresContracts[futuresContractHash].fundingRate;
+        uint256 multiplier = futuresContracts[futuresContractHash].multiplier;
+
+        uint256 fundingCost = safeMul(safeMul(safeMul(min(0,fundingBlocks), fundingRate), safeMul(qty, price))/1e16, multiplier)/1e28;
+
+        return fundingCost;  
     }
 
     function calculateFee (uint256 qty, uint256 tradePrice, uint256 fee, bytes32 futuresContractHash) returns (uint256)
@@ -1167,43 +1094,34 @@ contract Exchange {
     function checkEnoughBalance (uint256 limitPrice, uint256 tradePrice, uint256 qty, bool side, uint256 fee, uint256 gasFee, bytes32 futuresContractHash, uint256 availableBalance) view returns (bool)
     {
         
-        bool inversed = futuresAssets[futuresContracts[futuresContractHash].asset].inversed;
         uint256 multiplier = futuresContracts[futuresContractHash].multiplier;
+        uint256 expirationBlock = futuresContracts[futuresContractHash].expirationBlock;
 
-        if (side)
-        {
-            // long
-            if (safeAdd(
-                    safeAdd(
-                        calculateCollateral(limitPrice, tradePrice, qty, side, futuresContractHash), 
-                        //safeMul(qty, fee) / (1 ether)
-                        calculateFee(qty, tradePrice, fee, futuresContractHash)
-                    ) * 1e10,
-                    gasFee 
-                ) > availableBalance)
-            {
-                return false; 
-            }
-        }
-        else
-        {
-            // short
-            if (safeAdd(
-                    safeAdd(
-                        calculateCollateral(limitPrice, tradePrice, qty, side, futuresContractHash), 
-                        //safeMul(qty, fee) / (1 ether)
-                        calculateFee(qty, tradePrice, fee, futuresContractHash)
-                    ) * 1e10, 
-                    gasFee 
-                ) > availableBalance)
-            {
-                return false;
-            }
+        uint256 tradeFee = calculateFee(qty, tradePrice, fee, futuresContractHash);
+        uint256 collateral = calculateCollateral(limitPrice, tradePrice, qty, side, futuresContractHash);
+        uint256 fundingCost = calculateFundingCost(tradePrice, qty, safeSub(expirationBlock, min(block.number, expirationBlock)), futuresContractHash);
 
+        if (safeAdd(
+                safeMul(
+                    safeAdd(
+                        collateral, 
+                        tradeFee
+                    ),
+                    1e10
+                ),                     
+                safeAdd(
+                    gasFee,
+                    safeMul(
+                        fundingCost,
+                        1e10
+                    )                        
+                ) 
+            ) > availableBalance)
+        {
+            return false;
         }
 
         return true;
-       
     }  
 
       
@@ -1216,7 +1134,7 @@ contract Exchange {
         address[2][] tradeAddresses,
         bool[] takerIsBuying,
         bytes32[] assetHash,
-        uint256[4][] contractValues
+        uint256[5][] contractValues
     ) onlyAdmin
     {
         // perform trades
@@ -1227,7 +1145,7 @@ contract Exchange {
                 tradeValues[i],
                 tradeAddresses[i],
                 takerIsBuying[i],
-                createFuturesContract(assetHash[i], contractValues[i][0], contractValues[i][1], contractValues[i][2], contractValues[i][3])
+                createFuturesContract(assetHash[i], contractValues[i][0], contractValues[i][1], contractValues[i][2], contractValues[i][3], contractValues[i][4])
             );
         }
     }
@@ -1260,120 +1178,70 @@ contract Exchange {
 
         */
 
-        //                          qty * price * fee
-        // uint256 pam[0] = safeMul(safeMul(uintValues[0], uintValues[1]), uintValues[2]) / (1 ether);
-        // uint256 collateral;  
-
-
-        // pam = [fee value, collateral]                        
-        uint256[2] memory pam = [safeAdd(calculateFee(uintValues[0], uintValues[1], uintValues[2], futuresContract) * 1e10, uintValues[6]), 0];
-        
-        // LogUint(100, uintValues[3]);
-        // LogUint(9, uintValues[2]);
-        // LogUint(7, safeMul(uintValues[0], uintValues[2])  / (1 ether));
-        // return;
-
-        
-
-        // Position is new or position is increased
+        // pam = [fee value, collateral, fundignCost, payableFundingCost]                        
+        uint256[4] memory pam = [
+            safeAdd(calculateFee(uintValues[0], uintValues[1], uintValues[2], futuresContract) * 1e10, uintValues[6]), 
+            0,
+            0,
+            0
+        ];
+               
         if (boolValues[0] || boolValues[2])  
         {
-
+            // Position is new or position is increased
             if (boolValues[1])
             {
-
-                //addReserve(addressValues[0], addressValues[1], uintValues[ 7], safeMul(safeSub(uintValues[1], futuresContracts[futuresContract].floorPrice), uintValues[0])); // reserve collateral on user
-                //pam[1] = safeMul(safeSub(uintValues[1], futuresContracts[futuresContract].floorPrice), uintValues[0]) / futuresContracts[futuresContract].floorPrice;
                 pam[1] = calculateCollateral(futuresContracts[futuresContract].floorPrice, uintValues[1], uintValues[0], true, futuresContract);
-
             }
             else
             {
-                //addReserve(addressValues[0], addressValues[1], uintValues[7], safeMul(safeSub(futuresContracts[futuresContract].capPrice, uintValues[1]), uintValues[0])); // reserve collateral on user
-                //pam[1] = safeMul(safeSub(futuresContracts[futuresContract].capPrice, uintValues[1]), uintValues[0]) / futuresContracts[futuresContract].capPrice;
                 pam[1] = calculateCollateral(futuresContracts[futuresContract].capPrice, uintValues[1], uintValues[0], false, futuresContract);
             }
 
-            subBalanceAddReserve(addressValues[0], addressValues[1], pam[0], safeAdd(pam[1],1));         
-
-            // if (uintValues[6] > 0)
-            // {   
-            //     subBalanceAddReserve(addressValues[0], addressValues[1], safeAdd(uintValues[6], pam[0]), pam[1]);                  
-                              
-            // }
-            // else
-            // {
-
-            //    subBalanceAddReserve(addressValues[0], addressValues[1], safeAdd(uintValues[6], pam[0]), pam[1]);                 
-            // }
-
-
-            //subBalance(addressValues[0], addressValues[1], uintValues[5], feeVal); // deduct user maker/taker fee 
+            pam[2] = calculateFundingCost(uintValues[1], uintValues[0], safeSub(futuresContracts[futuresContract].expirationBlock, block.number), futuresContract);
 
             
-        // Position exists
+
+            subBalanceAddReserve(addressValues[0], addressValues[1], pam[0], safeAdd(safeAdd(pam[1], pam[2]),1));         
         } 
         else 
         {
+            // Position exists, decreasing
             if (retrievePosition(positionHash)[2] == 0)
             {
                 // original position was short
-                //subReserve(addressValues[0], addressValues[1], uintValues[7], safeMul(uintValues[0], safeSub(futuresContracts[futuresContract].capPrice, retrievePosition(positionHash)[1]))); // remove freed collateral from reserver
-                //pam[1] = safeMul(uintValues[0], safeSub(futuresContracts[futuresContract].capPrice, retrievePosition(positionHash)[1])) / futuresContracts[futuresContract].capPrice;
-                pam[1] = calculateCollateral(futuresContracts[futuresContract].capPrice, retrievePosition(positionHash)[1], uintValues[0], false, futuresContract);
-
-                // LogUint(120, uintValues[0]);
-                // LogUint(121, futuresContracts[futuresContract].capPrice);
-                // LogUint(122, retrievePosition(positionHash)[1]);
-                // LogUint(123, uintValues[3]); // profit
-                // LogUint(124, uintValues[4]); // loss
-                // LogUint(125, safeAdd(uintValues[4], pam[0]));
-                // LogUint(12, pam[1] );
-                //return;
+                pam[1] = calculateCollateral(futuresContracts[futuresContract].capPrice, retrievePosition(positionHash)[1], uintValues[0], false, futuresContract);                          
             }
             else
-            {       
-                       
+            {                            
                 // original position was long
-                //subReserve(addressValues[0], addressValues[1], uintValues[7], safeMul(uintValues[0], safeSub(retrievePosition(positionHash)[1], futuresContracts[futuresContract].floorPrice)));
-                //pam[1] = safeMul(uintValues[0], safeSub(retrievePosition(positionHash)[1], futuresContracts[futuresContract].floorPrice)) / futuresContracts[futuresContract].floorPrice;
                 pam[1] = calculateCollateral(futuresContracts[futuresContract].floorPrice, retrievePosition(positionHash)[1], uintValues[0], true, futuresContract);
-
             }
 
+            pam[2] = calculateFundingCost(retrievePosition(positionHash)[1], uintValues[0], safeSub(futuresContracts[futuresContract].expirationBlock, retrievePosition(positionHash)[3]+1), futuresContract); 
+            pam[3] = safeMul(1e10, calculateFundingCost(retrievePosition(positionHash)[1], uintValues[0], safeSub(futuresContracts[futuresContract].expirationBlock, retrievePosition(positionHash)[3]), futuresContract));   
 
-                // LogUint(41, uintValues[3]);
-                // LogUint(42, uintValues[4]);
-                // LogUint(43, pam[0]);
-                // return;  
+
             if (uintValues[3] > 0) 
             {
                 // profi > 0
-
-                if (pam[0] <= uintValues[3]*1e10)
+                if (safeAdd(pam[0], pam[2]) <= safeMul(uintValues[3],1e10))
                 {
-                    //addBalance(addressValues[0], addressValues[1], uintValues[5], safeSub(uintValues[3], pam[0])); // add profit to user balance
-                    addBalanceSubReserve(addressValues[0], addressValues[1], safeSub(uintValues[3]*1e10, pam[0]), pam[1]);
+                    addBalanceSubReserve(addressValues[0], addressValues[1], safeSub(safeMul(uintValues[3],1e10), safeAdd(pam[0], pam[3])), safeAdd(pam[1], pam[2]));
                 }
                 else
                 {
-                    subBalanceSubReserve(addressValues[0], addressValues[1], safeSub(pam[0], uintValues[3]*1e10), pam[1]);
-                }
-                
+                    subBalanceSubReserve(addressValues[0], addressValues[1], safeSub(safeAdd(pam[0], pam[3]), safeMul(uintValues[3],1e10)), safeAdd(pam[1], pam[2]));
+                }                
             } 
             else 
             {   
-                
-
                 // loss >= 0
-                //subBalance(addressValues[0], addressValues[1], uintValues[5], safeAdd(uintValues[4], pam[0])); // deduct loss from user balance 
-                subBalanceSubReserve(addressValues[0], addressValues[1], safeAdd(uintValues[4]*1e10, pam[0]), pam[1]); // deduct loss from user balance
-           
-            } 
-            //}            
+                subBalanceSubReserve(addressValues[0], addressValues[1], safeAdd(safeMul(uintValues[4],1e10), safeAdd(pam[0], pam[3])), safeAdd(pam[1], pam[2])); // deduct loss from user balance
+            }           
         }          
         
-        addBalance(addressValues[0], feeAccount, EtherMium(exchangeContract).balanceOf(addressValues[0], feeAccount), pam[0]); // send fee to feeAccount
+        addBalance(addressValues[0], feeAccount, DMEX_Base(exchangeContract).balanceOf(addressValues[0], feeAccount), safeAdd(pam[0], pam[3])); // send fee to feeAccount
     }
 
     function recordNewPosition (bytes32 positionHash, uint256 size, uint256 price, uint256 side, uint256 block) private
@@ -1408,19 +1276,33 @@ contract Exchange {
 
         if (size > pos[0])
         {
+            uint256 totalValue = safeAdd(safeMul(pos[0], pos[1]), safeMul(price, safeSub(size, pos[0])));
+
+
             // position is increasing in size
-            recordNewPosition(positionHash, size, safeAdd(safeMul(pos[0], pos[1]), safeMul(price, safeSub(size, pos[0]))) / size, pos[2], pos[3]);
+            recordNewPosition(
+                positionHash, 
+                size, 
+                totalValue / size, 
+                pos[2], 
+                pos[3]//safeAdd(safeMul(safeMul(pos[0], pos[1]), pos[3]), safeMul(safeMul(price, safeSub(size, pos[0])), block.number)) / totalValue
+            );
         }
         else
         {
             // position is decreasing in size
-            recordNewPosition(positionHash, size, pos[1], pos[2], pos[3]);
+            recordNewPosition(
+                positionHash, 
+                size, 
+                pos[1], 
+                pos[2], 
+                pos[3]
+            );
         }        
     }
 
     function positionExists (bytes32 positionHash) internal view returns (bool)
     {
-        //LogUint(3,retrievePosition(positionHash)[0]);
         if (retrievePosition(positionHash)[0] == 0)
         {
             return false;
@@ -1431,12 +1313,15 @@ contract Exchange {
         }
     }
 
+
+
+
     // This function allows the user to manually release collateral in case the oracle service does not provide the price during the inactivityReleasePeriod
     function forceReleaseReserve (bytes32 futuresContract, bool side) public
     {   
         if (futuresContracts[futuresContract].expirationBlock == 0) throw;       
         if (futuresContracts[futuresContract].expirationBlock > block.number) throw;
-        if (safeAdd(futuresContracts[futuresContract].expirationBlock, EtherMium(exchangeContract).getInactivityReleasePeriod()) > block.number) throw;  
+        if (safeAdd(futuresContracts[futuresContract].expirationBlock, DMEX_Base(exchangeContract).getInactivityReleasePeriod()) > block.number) throw;  
 
         bytes32 positionHash = keccak256(this, msg.sender, futuresContract, side);
         if (retrievePosition(positionHash)[1] == 0) throw;    
@@ -1444,33 +1329,37 @@ contract Exchange {
 
         futuresContracts[futuresContract].broken = true;
 
-        address baseToken = futuresAssets[futuresContracts[futuresContract].asset].baseToken;
+        uint256[4] memory pos = retrievePosition(positionHash);
+        FuturesContract cont = futuresContracts[futuresContract];
+        address baseToken = futuresAssets[cont.asset].baseToken;
+
+        uint256 reservedFunding = calculateFundingCost(pos[1], pos[0], safeSub(cont.expirationBlock, pos[3]+1), futuresContract);
+        uint256 collateral;
 
         if (side)
         {
+            collateral = calculateCollateral(cont.floorPrice, pos[1], pos[0], true, futuresContract);
+
             subReserve(
                 baseToken, 
                 msg.sender, 
-                EtherMium(exchangeContract).getReserve(baseToken, msg.sender), 
-                //safeMul(safeSub(retrievePosition(positionHash)[1], futuresContracts[futuresContract].floorPrice), retrievePosition(positionHash)[0]) / futuresContracts[futuresContract].floorPrice
-                calculateCollateral(futuresContracts[futuresContract].floorPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], true, futuresContract)
+                DMEX_Base(exchangeContract).getReserve(baseToken, msg.sender), 
+                safeAdd(reservedFunding, collateral)
             ); 
         }
         else
-        {            
+        {         
+            collateral = calculateCollateral(cont.capPrice, pos[1], pos[0], false, futuresContract);
+               
             subReserve(
                 baseToken, 
                 msg.sender, 
-                EtherMium(exchangeContract).getReserve(baseToken, msg.sender), 
-                //safeMul(safeSub(futuresContracts[futuresContract].capPrice, retrievePosition(positionHash)[1]), retrievePosition(positionHash)[0]) / futuresContracts[futuresContract].capPrice
-                calculateCollateral(futuresContracts[futuresContract].capPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], false, futuresContract)
+                DMEX_Base(exchangeContract).getReserve(baseToken, msg.sender), 
+                safeAdd(reservedFunding, collateral)
             ); 
         }
 
         updatePositionSize(positionHash, 0, 0);
-
-        //EtherMium(exchangeContract).setReserve(baseToken, msg.sender, safeSub(EtherMium(exchangeContract).getReserve(baseToken, msg.sender), );
-        //reserve[futuresContracts[futuresContract].baseToken][msg.sender] = safeSub(reserve[futuresContracts[futuresContract].baseToken][msg.sender], positions[msg.sender][positionHash].collateral);
 
         emit FuturesForcedRelease(futuresContract, side, msg.sender);
 
@@ -1478,54 +1367,48 @@ contract Exchange {
 
     function addBalance(address token, address user, uint256 balance, uint256 amount) private
     {
-        EtherMium(exchangeContract).setBalance(token, user, safeAdd(balance, amount));
+        DMEX_Base(exchangeContract).setBalance(token, user, safeAdd(balance, amount));
     }
 
     function subBalance(address token, address user, uint256 balance, uint256 amount) private
     {
-        EtherMium(exchangeContract).setBalance(token, user, safeSub(balance, amount));
+        DMEX_Base(exchangeContract).setBalance(token, user, safeSub(balance, amount));
     }
 
     function subBalanceAddReserve(address token, address user, uint256 subBalance, uint256 addReserve) private
     {
-        EtherMium(exchangeContract).subBalanceAddReserve(token, user, subBalance, addReserve * 1e10);
+        DMEX_Base(exchangeContract).subBalanceAddReserve(token, user, subBalance, safeMul(addReserve, 1e10));
     }
 
     function addBalanceSubReserve(address token, address user, uint256 addBalance, uint256 subReserve) private
     {
 
-        EtherMium(exchangeContract).addBalanceSubReserve(token, user, addBalance, subReserve * 1e10);
+        DMEX_Base(exchangeContract).addBalanceSubReserve(token, user, addBalance, safeMul(subReserve, 1e10));
     }
 
     function subBalanceSubReserve(address token, address user, uint256 subBalance, uint256 subReserve) private
     {
-        // LogUint(31, subBalance);
-        // LogUint(32, subReserve);
-        // return;
-
-        EtherMium(exchangeContract).subBalanceSubReserve(token, user, subBalance, subReserve * 1e10);
+        DMEX_Base(exchangeContract).subBalanceSubReserve(token, user, subBalance, safeMul(subReserve, 1e10));
     }
 
     function addReserve(address token, address user, uint256 reserve, uint256 amount) private
     {
-        //reserve[token][user] = safeAdd(reserve[token][user], amount);
-        EtherMium(exchangeContract).setReserve(token, user, safeAdd(reserve, amount * 1e10));
+        DMEX_Base(exchangeContract).setReserve(token, user, safeAdd(reserve, safeMul(amount, 1e10)));
     }
 
     function subReserve(address token, address user, uint256 reserve, uint256 amount) private 
     {
-        //reserve[token][user] = safeSub(reserve[token][user], amount);
-        EtherMium(exchangeContract).setReserve(token, user, safeSub(reserve, amount * 1e10));
+        DMEX_Base(exchangeContract).setReserve(token, user, safeSub(reserve, safeMul(amount, 1e10)));
     }
 
 
     function getMakerTakerBalances(address maker, address taker, address token) public view returns (uint256[4])
     {
         return [
-            EtherMium(exchangeContract).balanceOf(token, maker),
-            EtherMium(exchangeContract).getReserve(token, maker),
-            EtherMium(exchangeContract).balanceOf(token, taker),
-            EtherMium(exchangeContract).getReserve(token, taker)
+            DMEX_Base(exchangeContract).balanceOf(token, maker),
+            DMEX_Base(exchangeContract).getReserve(token, maker),
+            DMEX_Base(exchangeContract).balanceOf(token, taker),
+            DMEX_Base(exchangeContract).getReserve(token, taker)
         ];
     }
 
@@ -1542,21 +1425,38 @@ contract Exchange {
 
     struct FuturesClosePositionValues {
         uint256 reserve;                // amount to be trade
-        uint256 balance;        // holds maker profit value
-        uint256 floorPrice;          // holds maker loss value
-        uint256 capPrice;        // holds taker profit value
-        uint256 closingPrice;          // holds taker loss value
-        bytes32 futuresContract; // the futures contract hash
+        uint256 balance;                // holds maker profit value
+        uint256 floorPrice;             // holds maker loss value
+        uint256 capPrice;               // holds taker profit value
+        uint256 closingPrice;           // holds taker loss value
+        bytes32 futuresContract;        // the futures contract hash
+        uint256 expirationBlock;        // the expiration block for the contract
+        uint256 entryBlock;             // the entry block for the position
+        uint256 collateral;             // reserved collateral
+        uint256 reservedFunding;        // reserved funding cost
+        uint256 payableFunding;         // spent funding cost
     }
 
 
-    function closeFuturesPosition (bytes32 futuresContract, bool side)
+    function closeFuturesPosition(bytes32 futuresContract, bool side)
     {
-        bytes32 positionHash = keccak256(this, msg.sender, futuresContract, side);
+        closeFuturesPositionInternal(futuresContract, side, msg.sender, 0);
+    }
+
+    function closeFuturesPositionInternal (bytes32 futuresContract, bool side, address user, uint256 gasFee) private returns (bool)
+    {
+        bytes32 positionHash = keccak256(this, user, futuresContract, side);        
 
         if (futuresContracts[futuresContract].closed == false && futuresContracts[futuresContract].expirationBlock != 0) throw; // contract not yet settled
         if (retrievePosition(positionHash)[1] == 0) throw; // position not found
         if (retrievePosition(positionHash)[0] == 0) throw; // position already closed
+
+        // failsafe, gas fee cannot be greater than 5% of position value
+        if (safeMul(gasFee * 1e10, 20) > calculateTradeValue(retrievePosition(positionHash)[0], retrievePosition(positionHash)[1], futuresContract))
+        {
+            emit LogError(uint8(Errors.GAS_TOO_HIGH), futuresContract, positionHash);
+            return false;
+        }
 
         uint256 profit;
         uint256 loss;
@@ -1564,139 +1464,118 @@ contract Exchange {
         address baseToken = futuresAssets[futuresContracts[futuresContract].asset].baseToken;
 
         FuturesClosePositionValues memory v = FuturesClosePositionValues({
-            reserve         : EtherMium(exchangeContract).getReserve(baseToken, msg.sender),
-            balance         : EtherMium(exchangeContract).balanceOf(baseToken, msg.sender),
+            reserve         : DMEX_Base(exchangeContract).getReserve(baseToken, user),
+            balance         : DMEX_Base(exchangeContract).balanceOf(baseToken, user),
             floorPrice      : futuresContracts[futuresContract].floorPrice,
             capPrice        : futuresContracts[futuresContract].capPrice,
             closingPrice    : futuresContracts[futuresContract].closingPrice,
-            futuresContract : futuresContract
+            futuresContract : futuresContract,
+            expirationBlock : futuresContracts[futuresContract].expirationBlock,
+            entryBlock      : retrievePosition(positionHash)[3],
+            collateral      : 0,
+            reservedFunding : 0,
+            payableFunding  : 0
         });
 
-        // uint256 reserve = EtherMium(exchangeContract).getReserve(baseToken, msg.sender);
-        // uint256 balance = EtherMium(exchangeContract).balanceOf(baseToken, msg.sender);
-        // uint256 floorPrice = futuresContracts[futuresContract].floorPrice;
-        // uint256 capPrice = futuresContracts[futuresContract].capPrice;
-        // uint256 closingPrice =  futuresContracts[futuresContract].closingPrice;
-
-
         
-        //uint256 fee = safeMul(safeMul(retrievePosition(positionHash)[0], v.closingPrice), takerFee) / (1 ether);
-        uint256 fee = calculateFee(retrievePosition(positionHash)[0], v.closingPrice, takerFee, futuresContract);
-
+        //uint256 fee = calculateFee(retrievePosition(positionHash)[0], v.closingPrice, takerFee, futuresContract);
+        uint256 fee = safeAdd(calculateFee(retrievePosition(positionHash)[0], v.closingPrice, takerFee, futuresContract), gasFee);
 
 
         // close long position
         if (side == true)
-        {            
+        {     
+            
+            v.collateral = calculateCollateral(v.floorPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], true, v.futuresContract);
+            v.reservedFunding = calculateFundingCost(retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], safeSub(v.expirationBlock, v.entryBlock+1), futuresContract);
+            v.payableFunding = calculateFundingCost(retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], safeSub(min(v.expirationBlock, block.number), v.entryBlock+1), futuresContract);
 
-            // LogUint(11, EtherMium(exchangeContract).getReserve(baseToken, msg.sender));
-            // LogUint(12, safeMul(safeSub(retrievePosition(positionHash)[1], futuresContracts[futuresContract].floorPrice), retrievePosition(positionHash)[0]) / futuresContracts[futuresContract].floorPrice);
-            // return;
-            // reserve = reserve - (entryPrice - floorPrice) * size;
-            //subReserve(baseToken, msg.sender, EtherMium(exchangeContract).getReserve(baseToken, msg.sender), safeMul(safeSub(positions[positionHash].entryPrice, futuresContracts[futuresContract].floorPrice), positions[positionHash].size));
-            
-            
+
             subReserve(
                 baseToken, 
-                msg.sender, 
+                user, 
                 v.reserve, 
-                //safeMul(safeSub(retrievePosition(positionHash)[1], v.floorPrice), retrievePosition(positionHash)[0]) / v.floorPrice
-                calculateCollateral(v.floorPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], true, v.futuresContract)
+                safeAdd(v.collateral, v.reservedFunding)
             );
-            //EtherMium(exchangeContract).setReserve(baseToken, msg.sender, safeSub(EtherMium(exchangeContract).getReserve(baseToken, msg.sender), safeMul(safeSub(positions[msg.sender][positionHash].entryPrice, futuresContracts[futuresContract].floorPrice), positions[msg.sender][positionHash].size));
-            //reserve[futuresContracts[futuresContract].baseToken][msg.sender] = safeSub(reserve[futuresContracts[futuresContract].baseToken][msg.sender], safeMul(safeSub(positions[msg.sender][positionHash].entryPrice, futuresContracts[futuresContract].floorPrice), positions[msg.sender][positionHash].size));
-            
             
 
             if (v.closingPrice > retrievePosition(positionHash)[1])
-            {
-                // user made a profit
-                //profit = safeMul(safeSub(v.closingPrice, retrievePosition(positionHash)[1]), retrievePosition(positionHash)[0]) / v.closingPrice;
-                profit = calculateProfit(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, false);
+            {   
                 
-
-
-                // LogUint(15, profit);
-                // LogUint(16, fee);
-                // LogUint(17, safeSub(profit * 1e10, fee));
-                // return;
-                if (profit > fee)
+                // user made a profit
+                profit = calculateProfit(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, false);
+          
+                if (profit > safeAdd(fee, v.payableFunding))
                 {
-                    addBalance(baseToken, msg.sender, v.balance, safeSub(profit * 1e10, fee * 1e10)); 
+                    addBalance(baseToken, user, v.balance, safeSub(safeMul(profit, 1e10), safeMul(safeAdd(fee, v.payableFunding), 1e10))); 
                 }
                 else
                 {
-                    subBalance(baseToken, msg.sender, v.balance, safeSub(fee * 1e10, profit * 1e10)); 
+                    subBalance(baseToken, user, v.balance, safeSub(safeMul(safeAdd(fee, v.payableFunding), 1e10), safeMul(profit, 1e10))); 
                 }
-                //EtherMium(exchangeContract).updateBalance(baseToken, msg.sender, safeAdd(EtherMium(exchangeContract).balanceOf(baseToken, msg.sender), profit);
-                //tokens[futuresContracts[futuresContract].baseToken][msg.sender] = safeAdd(tokens[futuresContracts[futuresContract].baseToken][msg.sender], profit);
             }
             else
             {
                 // user made a loss
-                //loss = safeMul(safeSub(retrievePosition(positionHash)[1], v.closingPrice), retrievePosition(positionHash)[0]) / v.closingPrice;
                 loss = calculateLoss(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, false);  
 
+                subBalance(baseToken, user, v.balance, safeAdd(safeMul(loss, 1e10), safeMul(safeAdd(fee, v.payableFunding), 1e10))); 
 
-                subBalance(baseToken, msg.sender, v.balance, safeAdd(loss * 1e10, fee * 1e10));
-                //tokens[futuresContracts[futuresContract].baseToken][msg.sender] = safeSub(tokens[futuresContracts[futuresContract].baseToken][msg.sender], loss);
             }
         }   
         // close short position 
         else
         {
-            // LogUint(11, EtherMium(exchangeContract).getReserve(baseToken, msg.sender));
-            // LogUint(12, safeMul(safeSub(futuresContracts[futuresContract].capPrice, retrievePosition(positionHash)[1]), retrievePosition(positionHash)[0]) / futuresContracts[futuresContract].capPrice);
-            // return;
+            v.collateral = calculateCollateral(v.capPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], false, v.futuresContract);
+            v.reservedFunding = calculateFundingCost(retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], safeSub(v.expirationBlock, v.entryBlock+1), futuresContract);
+            v.payableFunding = calculateFundingCost(retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], safeSub(min(v.expirationBlock, block.number), v.entryBlock+1), futuresContract);
 
-            // reserve = reserve - (capPrice - entryPrice) * size;
+
             subReserve(
                 baseToken, 
-                msg.sender,  
+                user,  
                 v.reserve, 
-                //safeMul(safeSub(v.capPrice, retrievePosition(positionHash)[1]), retrievePosition(positionHash)[0]) / v.capPrice
-                calculateCollateral(v.capPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], false, v.futuresContract)
+                safeAdd(v.collateral, v.reservedFunding)
             );
-            //EtherMium(exchangeContract).setReserve(baseToken, msg.sender, safeSub(EtherMium(exchangeContract).getReserve(baseToken, msg.sender), safeMul(safeSub(futuresContracts[futuresContract].capPrice, positions[msg.sender][positionHash].entryPrice), positions[msg.sender][positionHash].size));
-            //reserve[futuresContracts[futuresContract].baseToken][msg.sender] = safeSub(reserve[futuresContracts[futuresContract].baseToken][msg.sender], safeMul(safeSub(futuresContracts[futuresContract].capPrice, positions[msg.sender][positionHash].entryPrice), positions[msg.sender][positionHash].size));
-            
+
             
 
             if (v.closingPrice < retrievePosition(positionHash)[1])
             {
-                // user made a profit
-                // profit = (entryPrice - closingPrice) * size
-                // profit = safeMul(safeSub(retrievePosition(positionHash)[1], v.closingPrice), retrievePosition(positionHash)[0]) / v.closingPrice;
-                profit = calculateProfit(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, true);
 
-                if (profit > fee)
+                // user made a profit
+                profit = calculateProfit(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, true);
+ 
+                if (profit > safeAdd(fee, v.payableFunding))
                 {
-                    addBalance(baseToken, msg.sender, v.balance, safeSub(profit * 1e10, fee * 1e10)); 
+                    addBalance(baseToken, user, v.balance, safeSub(safeMul(profit, 1e10), safeMul(safeAdd(fee, v.payableFunding), 1e10))); 
                 }
                 else
                 {
-                    subBalance(baseToken, msg.sender, v.balance, safeSub(fee * 1e10, profit * 1e10)); 
+                    subBalance(baseToken, user, v.balance, safeSub(safeMul(safeAdd(fee, v.payableFunding), 1e10), safeMul(profit, 1e10))); 
                 }
 
-                //tokens[futuresContracts[futuresContract].baseToken][msg.sender] = safeAdd(tokens[futuresContracts[futuresContract].baseToken][msg.sender], profit);
             }
             else
             {
                 // user made a loss
-                // profit = (closingPrice - entryPrice) * size
-                //loss = safeMul(safeSub(v.closingPrice, retrievePosition(positionHash)[1]), retrievePosition(positionHash)[0]) / v.closingPrice;
                 loss = calculateLoss(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, true);  
 
-                subBalance(baseToken, msg.sender, v.balance, safeAdd(loss * 1e10, fee * 1e10));
+                subBalance(baseToken, user, v.balance, safeAdd(safeMul(loss, 1e10), safeMul(safeAdd(fee, v.payableFunding), 1e10)));
 
-                //tokens[futuresContracts[futuresContract].baseToken][msg.sender] = safeSub(tokens[futuresContracts[futuresContract].baseToken][msg.sender], loss);
             }
         }  
 
-        addBalance(baseToken, feeAccount, EtherMium(exchangeContract).balanceOf(baseToken, feeAccount), fee * 1e10); // send fee to feeAccount
+        addBalance(baseToken, feeAccount, DMEX_Base(exchangeContract).balanceOf(baseToken, feeAccount), safeMul(safeAdd(fee, v.payableFunding), 1e10)); // send fee to feeAccount
+        
+
         updatePositionSize(positionHash, 0, 0);
 
-        emit FuturesPositionClosed(positionHash);
+        
+
+        emit FuturesPositionClosed(positionHash, v.closingPrice);
+
+        return true;
     }
 
     function closeFuturesContract (bytes32 futuresContract, uint256 price) onlyOracle returns (bool)
@@ -1725,164 +1604,16 @@ contract Exchange {
 
         futuresContracts[futuresContract].closed = true;
 
-        emit FuturesContractClosed(futuresContract, price);
+        emit FuturesContractClosed(futuresContract, futuresContracts[futuresContract].closingPrice);
     }  
+
+
+
 
     // closes position for user
     function closeFuturesPositionForUser (bytes32 futuresContract, bool side, address user, uint256 gasFee) onlyAdmin
     {
-        bytes32 positionHash = keccak256(this, user, futuresContract, side);
-
-        if (futuresContracts[futuresContract].closed == false && futuresContracts[futuresContract].expirationBlock != 0) throw; // contract not yet settled
-        if (retrievePosition(positionHash)[1] == 0) throw; // position not found
-        if (retrievePosition(positionHash)[0] == 0) throw; // position already closed
-
-        // failsafe, gas fee cannot be greater than 5% of position value
-        if (safeMul(gasFee * 1e10, 20) > calculateTradeValue(retrievePosition(positionHash)[0], retrievePosition(positionHash)[1], futuresContract))
-        {
-            emit LogError(uint8(Errors.GAS_TOO_HIGH), futuresContract, positionHash);
-            return;
-        }
-
-
-        uint256 profit;
-        uint256 loss;
-
-        address baseToken = futuresAssets[futuresContracts[futuresContract].asset].baseToken;
-
-        FuturesClosePositionValues memory v = FuturesClosePositionValues({
-            reserve         : EtherMium(exchangeContract).getReserve(baseToken, user),
-            balance         : EtherMium(exchangeContract).balanceOf(baseToken, user),
-            floorPrice      : futuresContracts[futuresContract].floorPrice,
-            capPrice        : futuresContracts[futuresContract].capPrice,
-            closingPrice    : futuresContracts[futuresContract].closingPrice,
-            futuresContract : futuresContract
-        });
-
-        // uint256 reserve = EtherMium(exchangeContract).getReserve(baseToken, msg.sender);
-        // uint256 balance = EtherMium(exchangeContract).balanceOf(baseToken, msg.sender);
-        // uint256 floorPrice = futuresContracts[futuresContract].floorPrice;
-        // uint256 capPrice = futuresContracts[futuresContract].capPrice;
-        // uint256 closingPrice =  futuresContracts[futuresContract].closingPrice;
-
-
-        
-        //uint256 fee = safeMul(safeMul(retrievePosition(positionHash)[0], v.closingPrice), takerFee) / (1 ether);
-        uint256 fee = safeAdd(calculateFee(retrievePosition(positionHash)[0], v.closingPrice, takerFee, futuresContract), gasFee);
-
-        // close long position
-        if (side == true)
-        {            
-
-            // LogUint(11, EtherMium(exchangeContract).getReserve(baseToken, msg.sender));
-            // LogUint(12, safeMul(safeSub(retrievePosition(positionHash)[1], futuresContracts[futuresContract].floorPrice), retrievePosition(positionHash)[0]) / futuresContracts[futuresContract].floorPrice);
-            // return;
-            // reserve = reserve - (entryPrice - floorPrice) * size;
-            //subReserve(baseToken, msg.sender, EtherMium(exchangeContract).getReserve(baseToken, msg.sender), safeMul(safeSub(positions[positionHash].entryPrice, futuresContracts[futuresContract].floorPrice), positions[positionHash].size));
-            
-            
-            subReserve(
-                baseToken, 
-                user, 
-                v.reserve, 
-                //safeMul(safeSub(retrievePosition(positionHash)[1], v.floorPrice), retrievePosition(positionHash)[0]) / v.floorPrice
-                calculateCollateral(v.floorPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], true, v.futuresContract)
-            );
-            //EtherMium(exchangeContract).setReserve(baseToken, msg.sender, safeSub(EtherMium(exchangeContract).getReserve(baseToken, msg.sender), safeMul(safeSub(positions[msg.sender][positionHash].entryPrice, futuresContracts[futuresContract].floorPrice), positions[msg.sender][positionHash].size));
-            //reserve[futuresContracts[futuresContract].baseToken][msg.sender] = safeSub(reserve[futuresContracts[futuresContract].baseToken][msg.sender], safeMul(safeSub(positions[msg.sender][positionHash].entryPrice, futuresContracts[futuresContract].floorPrice), positions[msg.sender][positionHash].size));
-            
-            
-
-            if (v.closingPrice > retrievePosition(positionHash)[1])
-            {
-                // user made a profit
-                //profit = safeMul(safeSub(v.closingPrice, retrievePosition(positionHash)[1]), retrievePosition(positionHash)[0]) / v.closingPrice;
-                profit = calculateProfit(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, false);
-                
-
-
-                // LogUint(15, profit);
-                // LogUint(16, fee);
-                // LogUint(17, safeSub(profit * 1e10, fee));
-                // return;
-                if (profit > fee)
-                {
-                    addBalance(baseToken, user, v.balance, safeSub(profit * 1e10, fee * 1e10)); 
-                }
-                else
-                {
-                    subBalance(baseToken, user, v.balance, safeSub(fee * 1e10, profit * 1e10)); 
-                }
-                //EtherMium(exchangeContract).updateBalance(baseToken, msg.sender, safeAdd(EtherMium(exchangeContract).balanceOf(baseToken, msg.sender), profit);
-                //tokens[futuresContracts[futuresContract].baseToken][msg.sender] = safeAdd(tokens[futuresContracts[futuresContract].baseToken][msg.sender], profit);
-            }
-            else
-            {
-                // user made a loss
-                //loss = safeMul(safeSub(retrievePosition(positionHash)[1], v.closingPrice), retrievePosition(positionHash)[0]) / v.closingPrice;
-                loss = calculateLoss(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, false);  
-
-
-                subBalance(baseToken, user, v.balance, safeAdd(loss * 1e10, fee * 1e10));
-                //tokens[futuresContracts[futuresContract].baseToken][msg.sender] = safeSub(tokens[futuresContracts[futuresContract].baseToken][msg.sender], loss);
-            }
-        }   
-        // close short position 
-        else
-        {
-            // LogUint(11, EtherMium(exchangeContract).getReserve(baseToken, msg.sender));
-            // LogUint(12, safeMul(safeSub(futuresContracts[futuresContract].capPrice, retrievePosition(positionHash)[1]), retrievePosition(positionHash)[0]) / futuresContracts[futuresContract].capPrice);
-            // return;
-
-            // reserve = reserve - (capPrice - entryPrice) * size;
-            subReserve(
-                baseToken, 
-                user,  
-                v.reserve, 
-                //safeMul(safeSub(v.capPrice, retrievePosition(positionHash)[1]), retrievePosition(positionHash)[0]) / v.capPrice
-                calculateCollateral(v.capPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], false, v.futuresContract)
-            );
-            //EtherMium(exchangeContract).setReserve(baseToken, msg.sender, safeSub(EtherMium(exchangeContract).getReserve(baseToken, msg.sender), safeMul(safeSub(futuresContracts[futuresContract].capPrice, positions[msg.sender][positionHash].entryPrice), positions[msg.sender][positionHash].size));
-            //reserve[futuresContracts[futuresContract].baseToken][msg.sender] = safeSub(reserve[futuresContracts[futuresContract].baseToken][msg.sender], safeMul(safeSub(futuresContracts[futuresContract].capPrice, positions[msg.sender][positionHash].entryPrice), positions[msg.sender][positionHash].size));
-            
-            
-
-            if (v.closingPrice < retrievePosition(positionHash)[1])
-            {
-                // user made a profit
-                // profit = (entryPrice - closingPrice) * size
-                // profit = safeMul(safeSub(retrievePosition(positionHash)[1], v.closingPrice), retrievePosition(positionHash)[0]) / v.closingPrice;
-                profit = calculateProfit(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, true);
-
-                if (profit > fee)
-                {
-                    addBalance(baseToken, user, v.balance, safeSub(profit * 1e10, fee * 1e10)); 
-                }
-                else
-                {
-                    subBalance(baseToken, user, v.balance, safeSub(fee * 1e10, profit * 1e10)); 
-                }
-                
-
-                //tokens[futuresContracts[futuresContract].baseToken][msg.sender] = safeAdd(tokens[futuresContracts[futuresContract].baseToken][msg.sender], profit);
-            }
-            else
-            {
-                // user made a loss
-                // profit = (closingPrice - entryPrice) * size
-                //loss = safeMul(safeSub(v.closingPrice, retrievePosition(positionHash)[1]), retrievePosition(positionHash)[0]) / v.closingPrice;
-                loss = calculateLoss(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, true);  
-
-                subBalance(baseToken, user, v.balance, safeAdd(loss * 1e10, fee * 1e10));
-
-                //tokens[futuresContracts[futuresContract].baseToken][msg.sender] = safeSub(tokens[futuresContracts[futuresContract].baseToken][msg.sender], loss);
-            }
-        }  
-
-        addBalance(baseToken, feeAccount, EtherMium(exchangeContract).balanceOf(baseToken, feeAccount), fee * 1e10); // send fee to feeAccount
-        updatePositionSize(positionHash, 0, 0);
-
-        emit FuturesPositionClosed(positionHash);
+        closeFuturesPositionInternal(futuresContract, side, user, gasFee);
     }
 
     // Settle positions for closed contracts
@@ -1898,37 +1629,6 @@ contract Exchange {
             closeFuturesPositionForUser(futuresContracts[i], sides[i], users[i], gasFeePerClose);
         }
     }
-
-
-
-    function closeFuturesContractTemp (bytes32 futuresContract, uint256 price) onlyAdmin returns (bool)
-    {
-        if (futuresContracts[futuresContract].expirationBlock == 0)  return false; // contract not found
-        if (futuresContracts[futuresContract].closed == true)  return false; // contract already closed
-
-        if (futuresContracts[futuresContract].expirationBlock > block.number
-            && price > futuresContracts[futuresContract].floorPrice
-            && price < futuresContracts[futuresContract].capPrice) return false; // contract not yet expired and the price did not leave the range
-                
-
-        if (price <= futuresContracts[futuresContract].floorPrice)  
-        {
-            futuresContracts[futuresContract].closingPrice = futuresContracts[futuresContract].floorPrice; 
-        }  
-        else if (price >= futuresContracts[futuresContract].capPrice)
-        {
-            futuresContracts[futuresContract].closingPrice = futuresContracts[futuresContract].capPrice;
-        }   
-        else
-        {
-            futuresContracts[futuresContract].closingPrice = price;
-        }         
-        
-
-        futuresContracts[futuresContract].closed = true;
-
-        emit FuturesContractClosed(futuresContract, price);
-    } 
 
 
     
