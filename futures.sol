@@ -1,3 +1,7 @@
+/**
+ *Submitted for verification at Etherscan.io on 2019-08-06
+*/
+
 pragma solidity ^0.4.25;
 
 /* Interface for ERC20 Tokens */
@@ -137,11 +141,12 @@ contract Exchange {
         bytes32 asset;                  // the hash of the underlying asset object
         uint256 expirationBlock;        // futures contract expiration block
         uint256 closingPrice;           // the closing price for the futures contract
-        bool closed;                    // is the futures contract closed (0 - false, 1 - true)c
+        bool closed;                    // is the futures contract closed (0 - false, 1 - true)
         bool broken;                    // if someone has forced release of funds the contract is marked as broken and can no longer close positions (0-false, 1-true)
         uint256 floorPrice;             // the minimum price that can be traded on the contract, once price is reached the contract expires and enters settlement state 
         uint256 capPrice;               // the maximum price that can be traded on the contract, once price is reached the contract expires and enters settlement state
-        uint256 multiplier;             // the multiplier price, normally the ETHUSD price * 1e18c
+        uint256 multiplier;             // the multiplier price, normally the ETHUSD price * 1e18
+        uint256 fundingRate;            // the funding rate in percent per block (number in WEI)
     }
 
     function createFuturesContract(bytes32 asset, uint256 expirationBlock, uint256 floorPrice, uint256 capPrice, uint256 multiplier, uint256 fundingRate) onlyAdmin returns (bytes32)
