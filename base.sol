@@ -1,3 +1,7 @@
+/**
+ *Submitted for verification at Etherscan.io on 2019-09-02
+*/
+
 pragma solidity ^0.4.19;
 
 /* Interface for ERC20 Tokens */
@@ -287,6 +291,12 @@ contract Exchange {
     {
         if (!futuresContractAllowed(msg.sender, user)) throw;
         updateBalanceAndReserve(token, user, safeAdd(balanceOf(token, user), addBalance), safeSub(getReserve(token, user), subReserve));
+    }
+
+    function addBalanceAddReserve(address token, address user, uint256 addBalance, uint256 addReserve) onlyFuturesContract returns (bool)
+    {
+        if (!futuresContractAllowed(msg.sender, user)) throw;
+        updateBalanceAndReserve(token, user, safeAdd(balanceOf(token, user), addBalance), safeAdd(getReserve(token, user), addReserve));
     }
 
     function subBalanceSubReserve(address token, address user, uint256 subBalance, uint256 subReserve) onlyFuturesContract returns (bool)
