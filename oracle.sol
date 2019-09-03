@@ -10,6 +10,13 @@ contract DMEX {
 	function getContractClosed (bytes32 futuresContractHash) returns (bool);
 	function getContractPriceUrl (bytes32 futuresContractHash) returns (string);
 	function getContractPricePath (bytes32 futuresContractHash) returns (string);
+    function getAssetDecimals (bytes32 futuresContractHash) returns (uint256);
+
+    function getFloorPrice (bytes32 futuresContractHash) returns (uint256);
+    function getCapPrice (bytes32 futuresContractHash) returns (uint256);
+    function getMaintenanceMargin (bytes32 futuresContractHash) returns (uint256);
+
+    function setClosingPrice (bytes32 futuresContractHash, uint256 price) returns (bool);
 }
 
 // The DMEX Futures Contract
@@ -23,7 +30,9 @@ contract DMEX_Oracle is usingProvable {
 
 
 	event LogOracleRequest(bytes32 indexed queryId, bytes32 indexed futuresContractHash, string priceUrl, string pricePath);
-    event LogOracleCallback(bytes32 indexed queryId, bytes32 indexed futuresContractHash, string result, bytes proof);
+    event LogOracleCallback(bytes32 indexed queryId, bytes32 indexed futuresContractHash, string result);
+    event FuturesContractClosed(bytes32 indexed futuresContract, uint256 closingPrice);
+    event LogUint(uint8 id, uint256 value);
 
     // Event fired when the owner of the contract is changed
     event SetOwner(address indexed previousOwner, address indexed newOwner);
@@ -87,8 +96,6 @@ contract DMEX_Oracle is usingProvable {
 	// Constructor function, initializes the contract and sets the core variables
     function DMEX_Oracle() {
     	owner = msg.sender;
-
-        provable_setProof(proofType_TLSNotary);
     }
 
     function deposit() payable {
@@ -121,18 +128,84 @@ contract DMEX_Oracle is usingProvable {
     }
 
     // Receives price from the oracle
-    function __callback(bytes32 myid, string result, bytes proof) {
+    function __callback(bytes32 myid, string result) {
         if (msg.sender != provable_cbAddress()) revert();
         if (oracle_queries[myid][0] == 0) revert();
 
         bytes32 futuresContractHash = oracle_queries[myid];
 
-        emit LogOracleCallback(myid, futuresContractHash, result, proof);
+        emit LogOracleCallback(myid, futuresContractHash, result);
 
-        uint256 price = safeMul(parseInt(result, 2), 1e6);
+        uint256 decimals = DMEX(DMEX_contract).getAssetDecimals(futuresContractHash);
+        uint256 remainingDecimals = 8 - decimals;
 
-        DMEX(DMEX_contract).closeFuturesContract(futuresContractHash, price);
+        uint256 price = safeMul(parseInt(result, decimals), 10**remainingDecimals);
 
+        closeFuturesContractInternal(futuresContractHash, price);
+
+    }
+
+    function closeFuturesContractInternal(bytes32 futuresContract, uint256 price) private returns (bool)
+    {
+        uint256 expirationBlock = DMEX(DMEX_contract).getContractExpiration(futuresContract);
+        uint256 floorPrice = DMEX(DMEX_contract).getFloorPrice(futuresContract);
+        uint256 capPrice = DMEX(DMEX_contract).getCapPrice(futuresContract);
+
+        if (expirationBlock == 0)  return false; // contract not found
+        if (DMEX(DMEX_contract).getContractClosed(futuresContract) == true)  return false; // contract already closed
+
+        uint256 maintenanceMargin = DMEX(DMEX_contract).getMaintenanceMargin(futuresContract);//futuresAssets[futuresContracts[futuresContract].asset].maintenanceMargin;
+        uint256[2] memory marginInfo = extractMargin(floorPrice, capPrice);
+        
+        uint256 lowerLimit =    safeAdd(
+                                    floorPrice, 
+                                    safeMul(
+                                        marginInfo[0], 
+                                        maintenanceMargin / marginInfo[1]
+                                    ) / 1e18
+                                );
+
+
+        uint256 upperLimit =    safeSub(
+                                    capPrice, 
+                                    safeMul(
+                                        marginInfo[0], 
+                                        maintenanceMargin / marginInfo[1]
+                                    ) / 1e18
+                                );
+
+        if (expirationBlock > block.number
+            && price > lowerLimit
+            && price < upperLimit) return false; // contract not yet expired and the price did not leave the range
+         
+        
+      
+        //uint256 closingPrice;
+
+
+        // if (price <= lowerLimit) 
+        // {
+        //     closingPrice = floorPrice;
+        // }  
+        // else if (price >= upperLimit)
+        // {
+        //     closingPrice = capPrice;
+        // }   
+        // else
+        // {
+        //     closingPrice = price;
+        // }         
+        
+        DMEX(DMEX_contract).setClosingPrice(futuresContract, price); 
+
+        emit FuturesContractClosed(futuresContract, price);
+    }  
+
+
+    function extractMargin (uint256 floorPrice, uint256 capPrice) returns (uint256[2])
+    {
+        uint256 halfRange = safeSub(capPrice, floorPrice)/2;
+        return [safeAdd(halfRange, floorPrice), safeAdd(halfRange, floorPrice) / halfRange];    
     }
 
 }
