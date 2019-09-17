@@ -1,5 +1,5 @@
 /**
- *Submitted for verification at Etherscan.io on 2019-09-02
+ *Submitted for verification at Etherscan.io on 2019-09-16
 */
 
 pragma solidity ^0.4.25;
@@ -1230,12 +1230,14 @@ contract Exchange {
         */
 
         // pam = [fee value, collateral, fundignCost, payableFundingCost]                        
-        uint256[3] memory pam = [
+        uint256[4] memory pam = [
             safeAdd(calculateFee(uintValues[0], uintValues[1], uintValues[2], futuresContract) * 1e10, uintValues[6]), 
+            0,
             0,
             0
         ];
-               
+
+
         if (boolValues[0] || boolValues[2])  
         {
             if (pools[addressValues[1]]) return;
@@ -1270,34 +1272,35 @@ contract Exchange {
             }
 
             pam[2] = calculateFundingCost(retrievePosition(positionHash)[1], uintValues[0], safeSub(futuresContracts[futuresContract].expirationBlock, retrievePosition(positionHash)[3]+2), futuresContract);   
+            pam[3] = calculateFundingCost(retrievePosition(positionHash)[1], uintValues[0], safeSub(min(futuresContracts[futuresContract].expirationBlock, block.number), retrievePosition(positionHash)[3]+2), futuresContract);   
 
             if (pools[addressValues[1]]) {
                 pam[0] = 0;
                 pam[1] = 0;
                 pam[2] = 0;
+                pam[3] = 0;
             }
 
             if (uintValues[3] > 0) 
             {
                 // profi > 0
-                if (safeAdd(pam[0], pam[2]*1e10) <= safeMul(uintValues[3],1e10))
+                if (safeAdd(pam[0], pam[3]*1e10) <= safeMul(uintValues[3],1e10))
                 {
-                    addBalanceSubReserve(addressValues[0], addressValues[1], safeSub(safeMul(uintValues[3],1e10), safeAdd(pam[0], pam[2]*1e10)), safeAdd(pam[1], pam[2]));
+                    addBalanceSubReserve(addressValues[0], addressValues[1], safeSub(safeMul(uintValues[3],1e10), safeAdd(pam[0], pam[3]*1e10)), safeAdd(pam[1], pam[2]));
                 }
                 else
                 {
-                    subBalanceSubReserve(addressValues[0], addressValues[1], safeSub(safeAdd(pam[0], pam[2]*1e10), safeMul(uintValues[3],1e10)), safeAdd(pam[1], pam[2]));
+                    subBalanceSubReserve(addressValues[0], addressValues[1], safeSub(safeAdd(pam[0], pam[3]*1e10), safeMul(uintValues[3],1e10)), safeAdd(pam[1], pam[2]));
                 }                
             } 
             else 
             {   
                 // loss >= 0
-                subBalanceSubReserve(addressValues[0], addressValues[1], safeAdd(safeMul(uintValues[4],1e10), safeAdd(pam[0], pam[2]*1e10)), safeAdd(pam[1], pam[2])); // deduct loss from user balance
-            }     
-
+                subBalanceSubReserve(addressValues[0], addressValues[1], safeAdd(safeMul(uintValues[4],1e10), safeAdd(pam[0], pam[3]*1e10)), safeAdd(pam[1], pam[2])); // deduct loss from user balance
+            }
         }          
         
-        addBalance(addressValues[0], feeAccount, DMEX_Base(exchangeContract).balanceOf(addressValues[0], feeAccount), safeAdd(pam[0], pam[2]*1e10)); // send fee to feeAccount
+        addBalance(addressValues[0], feeAccount, DMEX_Base(exchangeContract).balanceOf(addressValues[0], feeAccount), safeAdd(pam[0], pam[3]*1e10)); // send fee to feeAccount
     }
 
     function recordNewPosition (bytes32 positionHash, uint256 size, uint256 price, uint256 side, uint256 block) private
@@ -1377,9 +1380,18 @@ contract Exchange {
         if (futuresContracts[futuresContract].expirationBlock == 0) throw;       
         if (futuresContracts[futuresContract].expirationBlock > block.number) throw;
         if (safeAdd(futuresContracts[futuresContract].expirationBlock, DMEX_Base(exchangeContract).getInactivityReleasePeriod()) > block.number) throw;  
-        if (pools[user]) return;
+        
 
         bytes32 positionHash = keccak256(this, user, futuresContract, side);
+
+        if (pools[user]) 
+        {
+            updatePositionSize(positionHash, 0, 0);
+
+            emit FuturesForcedRelease(futuresContract, side, user);
+            return;
+        }
+
         if (retrievePosition(positionHash)[1] == 0) throw;    
   
 
