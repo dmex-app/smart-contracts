@@ -1,7 +1,3 @@
-/**
- *Submitted for verification at Etherscan.io on 2019-09-02
-*/
-
 pragma solidity ^0.4.19;
 
 /* Interface for ERC20 Tokens */
@@ -82,13 +78,10 @@ contract Exchange {
     function setFuturesContract(address futuresContract, bool isFuturesContract) onlyOwner {
         if (fistFuturesContract == address(0))
         {
-            fistFuturesContract = futuresContract;
-            futuresContracts[futuresContract] = isFuturesContract;
+            fistFuturesContract = futuresContract;            
         }
-        else
-        {
-            throw;
-        }
+
+        futuresContracts[futuresContract] = isFuturesContract;
 
         futuresContractsAddedBlock[futuresContract] = block.number;
         emit SetFuturesContract(futuresContract, isFuturesContract);
@@ -152,8 +145,7 @@ contract Exchange {
 
     // Withdraw event fired when a withdrawal was executed
     event Withdraw(address indexed token, address indexed user, uint256 amount, uint256 balance, uint256 withdrawFee);
-    event WithdrawTo(address indexed token, address indexed to, address indexed from, uint256 amount, uint256 balance, uint256 withdrawFee);
-
+    
     // Fee change event
     event FeeChange(uint256 indexed makerFee, uint256 indexed takerFee);
 
@@ -275,7 +267,7 @@ contract Exchange {
     }
 
     function setBalance(address token, address user, uint256 amount) onlyFuturesContract returns (bool success)     {
-        if (!futuresContractAllowed(msg.sender, user)) throw;
+        if (msg.sender != fistFuturesContract) throw;
         updateBalance(token, user, amount);
         return true;
         
@@ -283,25 +275,25 @@ contract Exchange {
 
     function subBalanceAddReserve(address token, address user, uint256 subBalance, uint256 addReserve) onlyFuturesContract returns (bool)
     {
-        if (!futuresContractAllowed(msg.sender, user)) throw;
+        if (msg.sender != fistFuturesContract) throw;
         updateBalanceAndReserve(token, user, safeSub(balanceOf(token, user), subBalance), safeAdd(getReserve(token, user), addReserve));
     }
 
     function addBalanceSubReserve(address token, address user, uint256 addBalance, uint256 subReserve) onlyFuturesContract returns (bool)
     {
-        if (!futuresContractAllowed(msg.sender, user)) throw;
+        if (msg.sender != fistFuturesContract) throw;
         updateBalanceAndReserve(token, user, safeAdd(balanceOf(token, user), addBalance), safeSub(getReserve(token, user), subReserve));
     }
 
     function addBalanceAddReserve(address token, address user, uint256 addBalance, uint256 addReserve) onlyFuturesContract returns (bool)
     {
-        if (!futuresContractAllowed(msg.sender, user)) throw;
+        if (msg.sender != fistFuturesContract) throw;
         updateBalanceAndReserve(token, user, safeAdd(balanceOf(token, user), addBalance), safeAdd(getReserve(token, user), addReserve));
     }
 
     function subBalanceSubReserve(address token, address user, uint256 subBalance, uint256 subReserve) onlyFuturesContract returns (bool)
     {
-        if (!futuresContractAllowed(msg.sender, user)) throw;
+        if (msg.sender != fistFuturesContract) throw;
         updateBalanceAndReserve(token, user, safeSub(balanceOf(token, user), subBalance), safeSub(getReserve(token, user), subReserve));
     }
 
@@ -399,26 +391,12 @@ contract Exchange {
     function allowFuturesContractForUser(address futuresContract, address user, uint8 v, bytes32 r, bytes32 s) onlyAdmin
     {
         if (!futuresContracts[futuresContract]) throw;
-        bytes32 hash = keccak256(this, futuresContract); 
+        bytes32 hash = keccak256(this, 'allow', futuresContract, user); 
         if (ecrecover(keccak256("\x19Ethereum Signed Message:\n32", hash), v, r, s) != user) throw; // checks that the provided signature is valid
         userAllowedFuturesContracts[user][futuresContract] = true;
 
         emit AllowFuturesContract(futuresContract, user);
-    }
-
-    function allowFuturesContractForUserByFuturesContract(address user, uint8 v, bytes32 r, bytes32 s) onlyFuturesContract returns (bool)
-    {
-        if (!futuresContracts[msg.sender]) return false;
-        bytes32 hash = keccak256(this, msg.sender); 
-        if (ecrecover(keccak256("\x19Ethereum Signed Message:\n32", hash), v, r, s) != user) return false; // checks that the provided signature is valid
-        userAllowedFuturesContracts[user][msg.sender] = true;
-
-        emit AllowFuturesContract(msg.sender, user);
-
-        return true;
-    }
-
-    
+    }    
 
     // Withdrawal function used by the server to execute withdrawals
     function adminWithdraw(
