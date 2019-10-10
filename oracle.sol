@@ -12,10 +12,7 @@ contract DMEX {
 	function getContractPricePath (bytes32 futuresContractHash) returns (string);
     function getAssetDecimals (bytes32 futuresContractHash) returns (uint256);
 
-    function getFloorPrice (bytes32 futuresContractHash) returns (uint256);
-    function getCapPrice (bytes32 futuresContractHash) returns (uint256);
-    function getMaintenanceMargin (bytes32 futuresContractHash) returns (uint256);
-
+    function recordLatestAssetPrice(bytes32 futuresContractHash, uint256 price);
     function setClosingPrice (bytes32 futuresContractHash, uint256 price) returns (bool);
 }
 
@@ -25,13 +22,15 @@ contract DMEX_Oracle is usingProvable {
 	address public DMEX_contract;
 	address public owner; // holds the address of the contract owner
 
-	mapping (bytes32 => bytes32)            public oracle_queries;     // mapping of pending oracle price queries (queryId => futuresContractHash)
-	mapping (address => bool) 				public admins;             // mapping of admin addresses
+    mapping (bytes32 => bytes32)            public close_queries;       // mapping of pending oracle close contract queries (queryId => futuresContractHash)
+	mapping (bytes32 => bytes32)            public price_queries;         // mapping of pending oracle price queries (queryId => futuresContractHash)
+	mapping (address => bool) 				public admins;              // mapping of admin addresses
 
 
-	event LogOracleRequest(bytes32 indexed queryId, bytes32 indexed futuresContractHash, string priceUrl, string pricePath);
-    event LogOracleCallback(bytes32 indexed queryId, bytes32 indexed futuresContractHash, string result);
+	event LogOracleRequest(bytes32 indexed queryId, bytes32 indexed futuresContractHash, uint8 route, string priceUrl, string pricePath);
+    event LogOracleCallback(bytes32 indexed queryId, bytes32 indexed futuresContractHash, uint8 route,  string result);
     event FuturesContractClosed(bytes32 indexed futuresContract, uint256 closingPrice);
+    event AssetPriceUpdated(bytes32 indexed futuresContract, uint256 price);
     event LogUint(uint8 id, uint256 value);
 
     // Event fired when the owner of the contract is changed
@@ -122,90 +121,97 @@ contract DMEX_Oracle is usingProvable {
         provable_setCustomGasPrice(gasPrice);
 
         bytes32 queryId = provable_query("URL",strConcat("json(", priceUrl, ").",path), gasLimit);
-        oracle_queries[queryId] = futuresContractHash;
-        emit LogOracleRequest(queryId, futuresContractHash, priceUrl, path);
+        close_queries[queryId] = futuresContractHash;
+        emit LogOracleRequest(queryId, futuresContractHash, 0, priceUrl, path);
+
+    }
+
+    function queryPrice (bytes32 futuresContractHash, uint256 gasPrice, uint256 gasLimit) onlyAdmin payable
+    {
+        if (DMEX(DMEX_contract).getContractExpiration(futuresContractHash) == 0) revert(); // contract not found
+        if (DMEX(DMEX_contract).getContractClosed(futuresContractHash) == true) revert(); // contract already closed
+
+        recordAssetPriceWithOracle(futuresContractHash, gasPrice, gasLimit);
+    }
+
+    function recordAssetPriceWithOracle(bytes32 futuresContractHash, uint256 gasPrice, uint256 gasLimit) private {
+        string memory priceUrl = DMEX(DMEX_contract).getContractPriceUrl(futuresContractHash); // futuresAssets[DMEX(DMEX_contract).futuresContracts[futuresContractHash].asset].priceUrl;
+        string memory path = DMEX(DMEX_contract).getContractPricePath(futuresContractHash); //  futuresAssets[DMEX(DMEX_contract).futuresContracts[futuresContractHash].asset].pricePath;
+
+        provable_setCustomGasPrice(gasPrice);
+
+        bytes32 queryId = provable_query("URL",strConcat("json(", priceUrl, ").",path), gasLimit);
+        price_queries[queryId] = futuresContractHash;
+        emit LogOracleRequest(queryId, futuresContractHash, 1, priceUrl, path);
 
     }
 
     // Receives price from the oracle
     function __callback(bytes32 myid, string result) {
         if (msg.sender != provable_cbAddress()) revert();
-        if (oracle_queries[myid][0] == 0) revert();
+        if (close_queries[myid] == "" && price_queries[myid] == "") revert();
 
-        bytes32 futuresContractHash = oracle_queries[myid];
+        uint8 route;
+        bytes32 futuresContractHash;
+        bytes32 empty;
 
-        emit LogOracleCallback(myid, futuresContractHash, result);
+        if (close_queries[myid] != "")
+        {
+            route = 0;
+        }
+        else if (price_queries[myid] != "")
+        {
+            route = 1;
+        }
+        else
+        {
+            revert();
+        }
+
+        if (route == 0)
+        {
+            futuresContractHash = close_queries[myid]; 
+        }
+        else
+        {
+            futuresContractHash = price_queries[myid];
+        }
+        
+
+        emit LogOracleCallback(myid, futuresContractHash, route,  result);
 
         uint256 decimals = DMEX(DMEX_contract).getAssetDecimals(futuresContractHash);
         uint256 remainingDecimals = 8 - decimals;
 
         uint256 price = safeMul(parseInt(result, decimals), 10**remainingDecimals);
 
-        closeFuturesContractInternal(futuresContractHash, price);
-
+        if (route == 0)
+        {
+            closeFuturesContractInternal(futuresContractHash, price);
+        }
+        else
+        {
+            recordAssetPriceInternal(futuresContractHash, price);
+        }
     }
+
+    function recordAssetPriceInternal(bytes32 futuresContract, uint256 price) private returns (bool)
+    {        
+        DMEX(DMEX_contract).recordLatestAssetPrice(futuresContract, price); 
+
+        emit AssetPriceUpdated(futuresContract, price);
+    } 
 
     function closeFuturesContractInternal(bytes32 futuresContract, uint256 price) private returns (bool)
     {
         uint256 expirationBlock = DMEX(DMEX_contract).getContractExpiration(futuresContract);
-        uint256 floorPrice = DMEX(DMEX_contract).getFloorPrice(futuresContract);
-        uint256 capPrice = DMEX(DMEX_contract).getCapPrice(futuresContract);
 
-        if (expirationBlock == 0)  return false; // contract not found
+        if (expirationBlock == 0 || expirationBlock > block.number)  return false; // contract not found
         if (DMEX(DMEX_contract).getContractClosed(futuresContract) == true)  return false; // contract already closed
-
-        uint256 maintenanceMargin = DMEX(DMEX_contract).getMaintenanceMargin(futuresContract);//futuresAssets[futuresContracts[futuresContract].asset].maintenanceMargin;
-        uint256[2] memory marginInfo = extractMargin(floorPrice, capPrice);
-        
-        uint256 lowerLimit =    safeAdd(
-                                    floorPrice, 
-                                    safeMul(
-                                        marginInfo[0], 
-                                        maintenanceMargin / marginInfo[1]
-                                    ) / 1e18
-                                );
-
-
-        uint256 upperLimit =    safeSub(
-                                    capPrice, 
-                                    safeMul(
-                                        marginInfo[0], 
-                                        maintenanceMargin / marginInfo[1]
-                                    ) / 1e18
-                                );
-
-        if (expirationBlock > block.number
-            && price > lowerLimit
-            && price < upperLimit) return false; // contract not yet expired and the price did not leave the range
-         
-        
-      
-        //uint256 closingPrice;
-
-
-        // if (price <= lowerLimit) 
-        // {
-        //     closingPrice = floorPrice;
-        // }  
-        // else if (price >= upperLimit)
-        // {
-        //     closingPrice = capPrice;
-        // }   
-        // else
-        // {
-        //     closingPrice = price;
-        // }         
         
         DMEX(DMEX_contract).setClosingPrice(futuresContract, price); 
 
         emit FuturesContractClosed(futuresContract, price);
     }  
-
-
-    function extractMargin (uint256 floorPrice, uint256 capPrice) returns (uint256[2])
-    {
-        uint256 halfRange = safeSub(capPrice, floorPrice)/2;
-        return [safeAdd(halfRange, floorPrice), safeAdd(halfRange, floorPrice) / halfRange];    
-    }
 
 }
