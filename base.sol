@@ -1,3 +1,7 @@
+/**
+ *Submitted for verification at Etherscan.io on 2019-10-12
+*/
+
 pragma solidity ^0.4.19;
 
 /* Interface for ERC20 Tokens */
@@ -261,7 +265,6 @@ contract Exchange {
     // Sets reserved amount for specific token and user (can only be called by futures contract)
     function setReserve(address token, address user, uint256 amount) onlyFuturesContract returns (bool success) { 
         if (!futuresContractAllowed(msg.sender, user)) throw;
-        if (availableBalanceOf(token, user) < amount) throw; 
         updateReserve(token, user, amount);
         return true; 
     }
