@@ -1,3 +1,7 @@
+/**
+ *Submitted for verification at Etherscan.io on 2019-11-05
+*/
+
 pragma solidity ^0.4.25;
 
 /* Interface for ERC20 Tokens */
@@ -112,7 +116,6 @@ contract Exchange {
     uint256 public takerFee;            // taker fee in percent expressed as a fraction of 1 ether (0.1 ETH = 10%)
     
     struct FuturesAsset {
-        string name;                    // the name of the traded asset (ex. ETHUSD)
         address baseToken;              // the token for collateral
         string priceUrl;                // the url where the price of the asset will be taken for settlement
         string pricePath;               // price path in the returned JSON from the priceUrl (ex. path "last" will return tha value last from the json: {"high": "156.49", "last": "154.31", "timestamp": "1556522201", "bid": "154.22", "vwap": "154.65", "volume": "25578.79138868", "low": "152.33", "ask": "154.26", "open": "152.99"})
@@ -121,13 +124,13 @@ contract Exchange {
         uint256 decimals;               // number of decimals in the price
     }
 
-    function createFuturesAsset(string name, address baseToken, string priceUrl, string pricePath, uint256 maintenanceMargin, uint256 decimals) onlyAdmin returns (bytes32)
+    function createFuturesAsset(address baseToken, string priceUrl, string pricePath, uint256 maintenanceMargin, uint256 decimals) onlyAdmin returns (bytes32)
     {    
-        bytes32 futuresAsset = keccak256(this, name, baseToken, priceUrl, pricePath, maintenanceMargin, decimals);
+        bytes32 futuresAsset = keccak256(this, baseToken, priceUrl, pricePath, maintenanceMargin, decimals);
         if (futuresAssets[futuresAsset].disabled) throw; // asset already exists and is disabled
+        if (bytes(futuresAssets[futuresAsset].pricePath).length != 0) return futuresAsset;
 
         futuresAssets[futuresAsset] = FuturesAsset({
-            name                : name,
             baseToken           : baseToken,
             priceUrl            : priceUrl,
             pricePath           : pricePath,
@@ -136,7 +139,7 @@ contract Exchange {
             decimals            : decimals
         });
 
-        emit FuturesAssetCreated(futuresAsset, name, baseToken, priceUrl, pricePath);
+        //emit FuturesAssetCreated(futuresAsset, baseToken, priceUrl, pricePath);
         return futuresAsset;
     }
     
@@ -169,24 +172,28 @@ contract Exchange {
             perpetual       : perpetual
         });
 
-        emit FuturesContractCreated(futuresContract, asset, expirationBlock, multiplier);
-
+        //emit FuturesContractCreated(futuresContract, asset, expirationBlock, multiplier);
         return futuresContract;
     }
 
-    function getContractExpiration (bytes32 futuresContractHash) view returns (uint256)
+    function getContractExpiration (bytes32 futuresContractHash) public view returns (uint256)
     {
         return futuresContracts[futuresContractHash].expirationBlock;
     }
 
-    function getContractClosed (bytes32 futuresContractHash) returns (bool)
+    function getContractClosed (bytes32 futuresContractHash) public view returns (bool)
     {
         return futuresContracts[futuresContractHash].closed;
     }
 
-    function getAssetDecimals (bytes32 futuresContractHash) returns (uint256)
+    function getAssetDecimals (bytes32 futuresContractHash) public view returns (uint256)
     {
         return futuresAssets[futuresContracts[futuresContractHash].asset].decimals;
+    }
+
+    function getContractBaseToken (bytes32 futuresContractHash) public view returns (address)
+    {
+        return futuresAssets[futuresContracts[futuresContractHash].asset].baseToken;
     }
 
     function assetPriceUrl (bytes32 assetHash) public view returns (string)
@@ -199,7 +206,7 @@ contract Exchange {
         return futuresAssets[assetHash].pricePath;
     }
 
-    function assetDecimals (bytes32 assetHash) returns (uint256)
+    function assetDecimals (bytes32 assetHash) public view returns (uint256)
     {
         return futuresAssets[assetHash].decimals;
     }
@@ -268,7 +275,7 @@ contract Exchange {
     event FuturesTrade(bool side, uint256 size, uint256 price, bytes32 indexed futuresContract, bytes32 indexed makerOrderHash, bytes32 indexed takerOrderHash);
     event FuturesPositionClosed(bytes32 indexed positionHash, uint256 closingPrice);
     event FuturesForcedRelease(bytes32 indexed futuresContract, bool side, address user);
-    event FuturesAssetCreated(bytes32 indexed futuresAsset, string name, address baseToken, string priceUrl, string pricePath);
+    event FuturesAssetCreated(bytes32 indexed futuresAsset, address baseToken, string priceUrl, string pricePath);
     event FuturesContractCreated(bytes32 indexed futuresContract, bytes32 asset, uint256 expirationBlock, uint256 multiplier);
     event PositionLiquidated(bytes32 indexed positionHash, uint256 price);
     event FuturesMarginAdded(address indexed user, bytes32 indexed futuresContract, bool side, uint64 marginToAdd);
@@ -400,11 +407,6 @@ contract Exchange {
     }
 
 
-    function getContractBaseToken(bytes32 futuresContractHash) public view returns (address)
-    {
-        return futuresAssets[futuresContracts[futuresContractHash].asset].baseToken;
-    }
-
     function generateOrderHash (bool maker, bool takerIsBuying, address user, bytes32 futuresContractHash, uint256[11] tradeValues) public view returns (bytes32)
     {
         if (maker)
@@ -432,7 +434,7 @@ contract Exchange {
         address[2] tradeAddresses,
         bool takerIsBuying,
         bytes32 futuresContractHash
-    ) returns (uint filledTakerTokenAmount)
+    ) onlyAdmin returns (uint filledTakerTokenAmount)
     {
         /* tradeValues
           [0] makerNonce
@@ -1181,21 +1183,50 @@ contract Exchange {
         uint8[2][] v,
         bytes32[4][] rs,
         uint256[11][] tradeValues,
-        address[2][] tradeAddresses,
+        address[3][] tradeAddresses,
         bool[2][] boolValues,
-        bytes32[] assetHash,
-        uint256[3][] contractValues
+        uint256[5][] contractValues,
+        string priceUrl,
+        string pricePath
     ) onlyAdmin
     {
+        // function createFuturesAsset(address baseToken, string priceUrl, string pricePath, uint256 maintenanceMargin, uint256 decimals) onlyAdmin returns (bytes32)
+
+        /*
+            contractValues
+            [0] expirationBlock
+            [1] multiplier
+            [2] fundingRate
+            [3] asset maintenanceMargin
+            [4] asset decimals
+
+            assetStrings
+            [0] asset name
+            [1] asset priceUrl
+            [2] asset pricePath
+
+            tradeAddresses
+            [0] maker
+            [1] taker
+            [2] asset baseToken
+
+        */
+
         // perform trades
         for (uint i = 0; i < tradeAddresses.length; i++) {
             futuresTrade(
                 v[i],
                 rs[i],
                 tradeValues[i],
-                tradeAddresses[i],
+                [tradeAddresses[i][0], tradeAddresses[i][1]],
                 boolValues[i][0],
-                createFuturesContract(assetHash[i], contractValues[i][0], contractValues[i][1], contractValues[i][2], boolValues[i][1])
+                createFuturesContract(
+                    createFuturesAsset(tradeAddresses[i][2], priceUrl, pricePath, contractValues[i][3], contractValues[i][4]),
+                    contractValues[i][0], 
+                    contractValues[i][1], 
+                    contractValues[i][2], 
+                    boolValues[i][1]
+                )
             );
         }
     }
@@ -1454,28 +1485,29 @@ contract Exchange {
 
     struct FuturesClosePositionValues {
         address baseToken;
-        uint256 reserve;                // amount to be trade
-        uint256 balance;                // holds maker profit value
-        uint256 closingPrice;           // holds taker loss value
-        bytes32 futuresContract;        // the futures contract hash
-        uint256 expirationBlock;        // the expiration block for the contract
-        uint256 entryBlock;             // the entry block for the position
-        uint256 collateral;             // reserved collateral
+        uint256 reserve;                
+        uint256 balance;                
+        uint256 closingPrice;           
+        bytes32 futuresContract;        
+        uint256 expirationBlock;        
+        uint256 entryBlock;             
+        uint256 collateral;            
         uint256 totalPayable;
         uint256 closingBlock;
         uint256 liquidationPrice;
         uint256 closingFee;
         bool perpetual;
+        uint256 profit;
+        uint256 loss;
     }
 
 
     function closeFuturesPosition(bytes32 futuresContract, bool side, address poolAddress)
     {
-
-        closeFuturesPositionInternal(futuresContract, side, msg.sender, poolAddress);
+        closeFuturesPositionInternal(futuresContract, side, msg.sender, poolAddress, takerFee);
     }
 
-    function closeFuturesPositionInternal (bytes32 futuresContract, bool side, address user, address poolAddress) private returns (bool)
+    function closeFuturesPositionInternal (bytes32 futuresContract, bool side, address user, address poolAddress, uint256 expirationFee) private returns (bool)
     {
         bytes32 positionHash = keccak256(this, user, futuresContract, side);        
         bytes32 poolPositionHash = keccak256(this, poolAddress, futuresContract, !side);        
@@ -1485,12 +1517,12 @@ contract Exchange {
         if (retrievePosition(positionHash)[0] == 0) throw; // position already closed
         if (pools[user]) return;
         if (!pools[poolAddress]) return;
-
-        uint256 profit;
-        uint256 loss;
+// 30 000 gas
+        
+        uint256 fee = min(expirationFee, takerFee);
 
         FuturesClosePositionValues memory v = FuturesClosePositionValues({
-            baseToken       : futuresAssets[futuresContracts[futuresContract].asset].baseToken,
+            baseToken       : getContractBaseToken(futuresContract),
             reserve         : 0,
             balance         : 0,
             closingPrice    : futuresContracts[futuresContract].closingPrice,
@@ -1501,13 +1533,15 @@ contract Exchange {
             totalPayable    : 0,
             closingBlock    : futuresContracts[futuresContract].closingBlock,
             liquidationPrice: calculateLiquidationPriceFromPositionHash(futuresContract, side, user),
-            closingFee      : calculateFee(retrievePosition(positionHash)[0], retrievePosition(positionHash)[1], takerFee, futuresContract),
-            perpetual       : futuresContracts[futuresContract].perpetual
+            closingFee      : calculateFee(retrievePosition(positionHash)[0], retrievePosition(positionHash)[1], fee, futuresContract),
+            perpetual       : futuresContracts[futuresContract].perpetual,
+            profit          : 0,
+            loss            : 0
         });
 
         v.reserve = DMEX_Base(exchangeContract).getReserve(v.baseToken, user);
         v.balance = DMEX_Base(exchangeContract).balanceOf(v.baseToken, user);
-        
+// 49 000        
 
         if (( side && v.closingPrice <= v.liquidationPrice) ||
             (!side && v.closingPrice >= v.liquidationPrice) )
@@ -1516,40 +1550,46 @@ contract Exchange {
             return;
         }
 
+
+// 48962
+
         v.collateral = retrievePosition(positionHash)[4];         
         v.totalPayable = safeAdd(v.closingFee, calculateFundingCost(retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], safeSub(v.closingBlock, v.entryBlock+1), futuresContract));
 
+
+// 52476
         subReserve(
             v.baseToken, 
             user, 
             v.reserve, 
             v.collateral
         );             
+// 63991
 
         if (( side && v.closingPrice > retrievePosition(positionHash)[1]) ||
             (!side && v.closingPrice < retrievePosition(positionHash)[1]))
         {   
             // user made a profit
-            profit = calculateProfit(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, !side);
+            v.profit = calculateProfit(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, !side);
       
-            if (profit > v.totalPayable)
+            if (v.profit > v.totalPayable)
             {
-                addBalance(v.baseToken, user, v.balance, safeSub(safeMul(profit, 1e10), safeMul(v.totalPayable, 1e10))); 
+                addBalance(v.baseToken, user, v.balance, safeSub(safeMul(v.profit, 1e10), safeMul(v.totalPayable, 1e10))); 
             }
             else
             {
-                subBalance(v.baseToken, user, v.balance, safeMul(min(v.collateral, safeSub(v.totalPayable, profit)), 1e10)); 
+                subBalance(v.baseToken, user, v.balance, safeMul(min(v.collateral, safeSub(v.totalPayable, v.profit)), 1e10)); 
             }
 
-            subBalance(v.baseToken, poolAddress, DMEX_Base(exchangeContract).balanceOf(v.baseToken, poolAddress), safeMul(profit, 1e10)); 
+            subBalance(v.baseToken, poolAddress, DMEX_Base(exchangeContract).balanceOf(v.baseToken, poolAddress), safeMul(v.profit, 1e10)); 
         }
         else
         {
             // user made a loss
-            loss = calculateLoss(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, !side);  
-            
-            subBalance(v.baseToken, user, v.balance, safeMul(min(v.collateral, safeAdd(loss, v.totalPayable)), 1e10)); 
-            addBalance(v.baseToken, poolAddress, DMEX_Base(exchangeContract).balanceOf(v.baseToken, poolAddress), safeMul(loss, 1e10)); 
+            v.loss = calculateLoss(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, !side);  
+// 66904      
+            subBalance(v.baseToken, user, v.balance, safeMul(min(v.collateral, safeAdd(v.loss, v.totalPayable)), 1e10)); 
+            addBalance(v.baseToken, poolAddress, DMEX_Base(exchangeContract).balanceOf(v.baseToken, poolAddress), safeMul(v.loss, 1e10)); 
         } 
 
         addBalance(v.baseToken, feeAccount, DMEX_Base(exchangeContract).balanceOf(v.baseToken, feeAccount), safeMul(v.totalPayable, 1e10)); // send fee to feeAccount
@@ -1571,50 +1611,66 @@ contract Exchange {
     }
 
     // closes position for user
-    function closeFuturesPositionForUser (bytes32 futuresContract, bool side, address user, address poolAddress) onlyAdmin
+    function closeFuturesPositionForUser (bytes32 futuresContract, bool side, address user, address poolAddress, uint256 expirationFee) onlyAdmin
     {
-        closeFuturesPositionInternal(futuresContract, side, user, poolAddress);
+        closeFuturesPositionInternal(futuresContract, side, user, poolAddress, expirationFee);
     }
 
-    function addMargin (bytes32 futuresContractHash, address user, bool side, uint8 v, bytes32 r, bytes32 s, uint64 marginToAdd)
-    {
-        bytes32 positionHash = generatePositionHash(user, futuresContractHash, side);        
-        uint256[5] memory pos = retrievePosition(positionHash);
-        if (pos[0] == 0) revert();
+    // struct AddMarginValues {
+    //     bytes32 addMarginHash;
+    //     uint256 addMarginFee;
+    //     bytes32 assetHash;
+    // }
 
-        // check the signature is correct
-        bytes32 addMarginHash = keccak256(this, user, futuresContractHash, side, marginToAdd);
-        if (ecrecover(keccak256("\x19Ethereum Signed Message:\n32", addMarginHash), v, r, s) != user) revert();
+    // function addMargin (bytes32 futuresContractHash, address user, bool side, uint8 vs, bytes32 r, bytes32 s, uint64 marginToAdd, uint256 operationFee)
+    // {
+    //     bytes32 positionHash = generatePositionHash(user, futuresContractHash, side);        
+    //     uint256[5] memory pos = retrievePosition(positionHash);
+    //     if (pos[0] == 0) revert();
+
+    //     uint256 fee = min(operationFee, takerFee);
+
+    //     AddMarginValues memory v = AddMarginValues({
+    //         addMarginHash: keccak256(this, user, futuresContractHash, side, marginToAdd),
+    //         addMarginFee: calculateFee(pos[0], pos[1], fee, futuresContractHash),
+    //         assetHash: futuresContracts[futuresContractHash].asset
+    //     });
+
+    //     // check the signature is correct
+    //     //bytes32 addMarginHash = keccak256(this, user, futuresContractHash, side, marginToAdd);
+    //     if (ecrecover(keccak256("\x19Ethereum Signed Message:\n32", v.addMarginHash), vs, r, s) != user) revert();
         
-        uint256 addMarginFee = calculateFee(pos[0], pos[1], takerFee, futuresContractHash);
-        bytes32 assetHash = futuresContracts[futuresContractHash].asset;
+    //     // uint256 fee = min(operationFee, takerFee);
+    //     // uint256 addMarginFee = calculateFee(pos[0], pos[1], fee, futuresContractHash);
+    //     //bytes32 assetHash = futuresContracts[futuresContractHash].asset;
 
-        // check user has enough available balance
-        if (DMEX_Base(exchangeContract).availableBalanceOf(futuresAssets[assetHash].baseToken, user) < safeMul(safeAdd(marginToAdd, addMarginFee), 1e10)) revert();
+    //     // check user has enough available balance
+    //     if (DMEX_Base(exchangeContract).availableBalanceOf(futuresAssets[v.assetHash].baseToken, user) < safeMul(safeAdd(marginToAdd, v.addMarginFee), 1e10)) revert();
 
-        // reserve additional margin and subtract fee from user
-        subBalanceAddReserve(futuresAssets[assetHash].baseToken, user, safeMul(addMarginFee, 1e10), marginToAdd);
+    //     // reserve additional margin and subtract fee from user
+    //     subBalanceAddReserve(futuresAssets[v.assetHash].baseToken, user, safeMul(v.addMarginFee, 1e10), marginToAdd);
 
-        // add margin to position
-        updatePositionSize(positionHash, pos[0], pos[1], safeAdd(pos[4], marginToAdd));
+    //     // add margin to position
+    //     updatePositionSize(positionHash, pos[0], pos[1], safeAdd(pos[4], marginToAdd));
 
-        // add fee to feeAccount
-        addBalance(futuresAssets[assetHash].baseToken, feeAccount, DMEX_Base(exchangeContract).balanceOf(futuresAssets[assetHash].baseToken, feeAccount), safeMul(addMarginFee, 1e10));
+    //     // add fee to feeAccount
+    //     addBalance(futuresAssets[v.assetHash].baseToken, feeAccount, DMEX_Base(exchangeContract).balanceOf(futuresAssets[v.assetHash].baseToken, feeAccount), safeMul(v.addMarginFee, 1e10));
     
-        emit FuturesMarginAdded(user, futuresContractHash, side, marginToAdd);
-    }
+    //     emit FuturesMarginAdded(user, futuresContractHash, side, marginToAdd);
+    // }
 
     // Settle positions for closed contracts
     function batchSettlePositions (
         bytes32[] futuresContracts,
         bool[] sides,
         address[] users,
-        address[] pools
+        address[] pools,
+        uint256[] expirationFee
     ) onlyAdmin {
         
         for (uint i = 0; i < futuresContracts.length; i++) 
         {
-            closeFuturesPositionForUser(futuresContracts[i], sides[i], users[i], pools[i]);
+            closeFuturesPositionForUser(futuresContracts[i], sides[i], users[i], pools[i], expirationFee[i]);
         }
     }
 
