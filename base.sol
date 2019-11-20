@@ -1,7 +1,3 @@
-/**
- *Submitted for verification at Etherscan.io on 2019-10-12
-*/
-
 pragma solidity ^0.4.19;
 
 /* Interface for ERC20 Tokens */
@@ -54,6 +50,7 @@ contract Exchange {
 
     // Event fired when the owner of the contract is changed
     event SetOwner(address indexed previousOwner, address indexed newOwner);
+    event ContractDestroyed();
 
     // Allows only the owner of the contract to execute the function
     modifier onlyOwner {
@@ -125,6 +122,10 @@ contract Exchange {
     mapping (bytes32 => bool) public withdrawn; // mapping of withdraw requests, makes sure the same withdrawal is not executed twice
     uint256 public makerFee; // maker fee in percent expressed as a fraction of 1 ether (0.1 ETH = 10%)
     uint256 public takerFee; // taker fee in percent expressed as a fraction of 1 ether (0.1 ETH = 10%)
+
+    bool public destroyed = false; // contract is destoryed
+    uint256 public destroyDelay = 1000000; // number of blocks after destroy contract still active (aprox 6 monthds)
+    uint256 public destroyBlock;
 
     enum Errors {
         INVLID_PRICE,           // Order prices don't match
@@ -203,9 +204,14 @@ contract Exchange {
         emit FeeChange(makerFee, takerFee);
     }
 
-    
+    // Sets the inactivity period before a user can withdraw funds manually
+    function destroyContract() onlyOwner returns (bool success) {
+        if (destroyed) throw;
+        destroyBlock = block.number;
 
-
+        emit ContractDestroyed();
+        return true;
+    }
 
     function updateBalanceAndReserve (address token, address user, uint256 balance, uint256 reserve) private
     {
@@ -327,6 +333,7 @@ contract Exchange {
 
     // Deposit ETH to contract
     function deposit() payable {
+        if (destroyed) revert();
         //tokens[address(0)][msg.sender] = safeAdd(tokens[address(0)][msg.sender], msg.value); // adds the deposited amount to user balance
         addBalance(address(0), msg.sender, msg.value); // adds the deposited amount to user balance
         if (userFirstDeposits[msg.sender] == 0) userFirstDeposits[msg.sender] = block.number;
@@ -336,6 +343,7 @@ contract Exchange {
 
     // Deposit ETH to contract for a user
     function depositForUser(address user) payable {
+        if (destroyed) revert();
         //tokens[address(0)][msg.sender] = safeAdd(tokens[address(0)][msg.sender], msg.value); // adds the deposited amount to user balance
         addBalance(address(0), user, msg.value); // adds the deposited amount to user balance
         if (userFirstDeposits[user] == 0) userFirstDeposits[user] = block.number;
@@ -345,6 +353,7 @@ contract Exchange {
 
     // Deposit token to contract
     function depositToken(address token, uint128 amount) {
+        if (destroyed) revert();
         //tokens[token][msg.sender] = safeAdd(tokens[token][msg.sender], amount); // adds the deposited amount to user balance
         //if (amount != uint128(amount) || safeAdd(amount, balanceOf(token, msg.sender)) != uint128(amount)) throw;
         addBalance(token, msg.sender, amount); // adds the deposited amount to user balance
@@ -356,7 +365,8 @@ contract Exchange {
     }
 
     // Deposit token to contract for a user
-    function depositToken(address token, uint128 amount, address user) {
+    function depositTokenForUser(address token, uint128 amount, address user) {
+        if (destroyed) revert();
         //tokens[token][msg.sender] = safeAdd(tokens[token][msg.sender], amount); // adds the deposited amount to user balance
         //if (amount != uint128(amount) || safeAdd(amount, balanceOf(token, msg.sender)) != uint128(amount)) throw;
         addBalance(token, user, amount); // adds the deposited amount to user balance
@@ -381,6 +391,17 @@ contract Exchange {
             if (!Token(token).transfer(msg.sender, amount)) throw; // Send token
         }
         emit Withdraw(token, msg.sender, amount, balanceOf(token, msg.sender), 0); // fires the Withdraw event
+    }
+
+    function releaseFundsAfterDestroy(address token, uint256 amount) onlyOwner returns (bool success) {
+        if (!destroyed) throw;
+        if (safeAdd(destroyBlock, destroyDelay) > block.number) throw; // destroy delay not yet passed
+
+        if (token == address(0)) { // checks if withdrawal is a token or ETH, ETH has address 0x00000... 
+            if (!msg.sender.send(amount)) throw; // send ETH
+        } else {
+            if (!Token(token).transfer(msg.sender, amount)) throw; // Send token
+        }
     }
 
     function userAllowFuturesContract(address futuresContract)
