@@ -1,20 +1,8 @@
-pragma solidity ^0.4.25;
+/**
+ *Submitted for verification at Etherscan.io on 2020-02-13
+*/
 
-/* Interface for ERC20 Tokens */
-contract Token {
-    bytes32 public standard;
-    bytes32 public name;
-    bytes32 public symbol;
-    uint256 public totalSupply;
-    uint8 public decimals;
-    bool public allowTransactions;
-    mapping (address => uint256) public balanceOf;
-    mapping (address => mapping (address => uint256)) public allowance;
-    function transfer(address _to, uint256 _value) returns (bool success);
-    function approveAndCall(address _spender, uint256 _value, bytes _extraData) returns (bool success);
-    function approve(address _spender, uint256 _value) returns (bool success);
-    function transferFrom(address _from, address _to, uint256 _value) returns (bool success);
-}
+pragma solidity ^0.4.25;
 
 /* Interface for the DMEX base contract */
 contract DMEX_Base {
@@ -24,13 +12,9 @@ contract DMEX_Base {
     function availableBalanceOf(address token, address user) returns (uint256);
     function balanceOf(address token, address user) returns (uint256);
 
-
     function setBalance(address token, address user, uint256 amount) returns (bool);
-    function getAffiliate(address user) returns (address);
     function getInactivityReleasePeriod() returns (uint256);
     function getMakerTakerBalances(address token, address maker, address taker) returns (uint256[4]);
-
-    function getEtmTokenAddress() returns (address);
 
     function subBalanceAddReserve(address token, address user, uint256 subBalance, uint256 addReserve) returns (bool);
     function subBalanceSubReserve(address token, address user, uint256 subBalance, uint256 subReserve) returns (bool);
@@ -38,10 +22,8 @@ contract DMEX_Base {
     
 }
 
-
-
-// The DMEX Futures Contract
-contract Exchange {
+// The DMEX Trading Contract
+contract DMEX_Trading {
     function assert(bool assertion) pure {
         
         if (!assertion) {
@@ -92,25 +74,23 @@ contract Exchange {
         owner = newOwner;
     }
 
-    // Owner getter function
-    function getOwner() view returns (address out) {
-        return owner;
-    }
-
     mapping (address => bool) public admins;                    // mapping of admin addresses
     mapping (address => bool) public pools;                     // mapping of liquidity pool addresses
-    mapping (address => uint256) public lastActiveTransaction;  // mapping of user addresses to last transaction block
     mapping (bytes32 => uint256) public orderFills;             // mapping of orders to filled qunatity
     mapping (bytes32 => mapping(uint256 => uint256)) public assetPrices; // mapping of assetHashes to block numbers to prices
 
 
     address public feeAccount;          // the account that receives the trading fees
-    address public exchangeContract;    // the address of the main DMEX_Base contract
-    address public DmexOracleContract;    // the address of the DMEX math contract used for some calculations
+    address public exchangeContract;    // the address of the DMEX_Base contract
+    address public DmexOracleContract;  // the address of the DMEX oracle contract
 
     uint256 public makerFee;            // maker fee in percent expressed as a fraction of 1 ether (0.1 ETH = 10%)
     uint256 public takerFee;            // taker fee in percent expressed as a fraction of 1 ether (0.1 ETH = 10%)
     
+    uint256 public fundingInterval = 2057;     // the interval in blocks when funding fee is charged
+
+    bool public feeAccountChangeDisabled = false; // if true, fee account can't be changed
+
     struct FuturesAsset {
         address baseToken;              // the token for collateral
         string priceUrl;                // the url where the price of the asset will be taken for settlement
@@ -123,8 +103,7 @@ contract Exchange {
     {    
         bytes32 futuresAsset = keccak256(this, baseToken, priceUrl, pricePath, decimals);
         if (futuresAssets[futuresAsset].disabled) throw; // asset already exists and is disabled
-        if (bytes(futuresAssets[futuresAsset].pricePath).length != 0) return futuresAsset;
-
+        
         futuresAssets[futuresAsset] = FuturesAsset({
             baseToken           : baseToken,
             priceUrl            : priceUrl,
@@ -133,7 +112,7 @@ contract Exchange {
             decimals            : decimals            
         });
 
-        //emit FuturesAssetCreated(futuresAsset, baseToken, priceUrl, pricePath, maintenanceMargin);
+        //emit FuturesAssetCreated(futuresAsset, baseToken, priceUrl, pricePath, decimals);
         return futuresAsset;
     }
     
@@ -141,7 +120,7 @@ contract Exchange {
         bytes32 asset;                  // the hash of the underlying asset object
         uint256 expirationBlock;        // futures contract expiration block
         uint256 closingPrice;           // the closing price for the futures contract
-        bool closed;                    // is the futures contract closed (0 - false, 1 - true)c
+        bool closed;                    // is the futures contract closed (0 - false, 1 - true)
         bool broken;                    // if someone has forced release of funds the contract is marked as broken and can no longer close positions (0-false, 1-true)
         uint256 multiplier;             // the multiplier price, normally the ETHUSD price * 1e8
         uint256 fundingRate;            // funding rate expressed as proportion per block * 1e18
@@ -153,8 +132,7 @@ contract Exchange {
     function createFuturesContract(bytes32 asset, uint256 expirationBlock, uint256 multiplier, uint256 fundingRate, bool perpetual, uint256 maintenanceMargin) onlyAdmin returns (bytes32)
     {    
         bytes32 futuresContract = keccak256(this, asset, expirationBlock, multiplier, fundingRate, perpetual, maintenanceMargin);
-        if (futuresContracts[futuresContract].expirationBlock > 0) return futuresContract; // contract already exists
-
+        
         futuresContracts[futuresContract] = FuturesContract({
             asset               : asset,
             expirationBlock     : expirationBlock,
@@ -192,19 +170,9 @@ contract Exchange {
         return futuresAssets[futuresContracts[futuresContractHash].asset].baseToken;
     }
 
-    function assetPriceUrl (bytes32 assetHash) public view returns (string)
-    {
-        return futuresAssets[assetHash].priceUrl;
-    }
-
     function assetPricePath (bytes32 assetHash) public view returns (string)
     {
         return futuresAssets[assetHash].pricePath;
-    }
-
-    function assetDecimals (bytes32 assetHash) public view returns (uint256)
-    {
-        return futuresAssets[assetHash].decimals;
     }
 
     function getContractPriceUrl (bytes32 futuresContractHash) returns (string)
@@ -242,54 +210,35 @@ contract Exchange {
 
     enum Errors {
         /*  0 */INVALID_PRICE,                 
-        /*  1 */INVALID_SIGNATURE,              
-        /*  2 */ORDER_ALREADY_FILLED,           
-        /*  3 */GAS_TOO_HIGH,                  
-        /*  4 */OUT_OF_BALANCE,                 
-        /*  5 */FUTURES_CONTRACT_EXPIRED,       
-        /*  6 */FLOOR_OR_CAP_PRICE_REACHED,     
-        /*  7 */POSITION_ALREADY_EXISTS,        
-        /*  8 */UINT48_VALIDATION,              
-        /*  9 */FAILED_ASSERTION,               
-        /* 10 */NOT_A_POOL,
-        /* 11 */POSITION_EMPTY,
-        /* 12 */OLD_CONTRACT_OPEN,
-        /* 13 */OLD_CONTRACT_IN_RANGE,
-        /* 14 */NEW_CONTRACT_NOT_FOUND,
-        /* 15 */DIFF_EXPIRATIONS,
-        /* 16 */DIFF_ASSETS,
-        /* 17 */WRONG_RANGE,
-        /* 18 */IDENTICAL_CONTRACTS,
-        /* 19 */USER_NOT_IN_PROFIT,
-        /* 20 */WRONG_MULTIPLIER,
-        /* 21 */USER_POSITION_GREATER,
-        /* 22 */WRONG_FUNDING_RATE,
-        /* 23 */MUST_BE_LIQUIDATED,
-        /* 24 */LIQUIDATION_PRICE_NOT_TOUCHED
+        /*  1 */INVALID_SIGNATURE,                
+        /*  2 */FUTURES_CONTRACT_EXPIRED,       
+        /*  3 */UINT48_VALIDATION,
+        /*  4 */LIQUIDATION_PRICE_NOT_TOUCHED,
+        /*  5 */POOL_MISUSE
     }
 
     event FuturesTrade(bool side, uint256 size, uint256 price, bytes32 indexed futuresContract, bytes32 indexed makerOrderHash, bytes32 indexed takerOrderHash);
     event FuturesPositionClosed(bytes32 indexed positionHash, uint256 closingPrice);
-    event FuturesForcedRelease(bytes32 indexed futuresContract, bool side, address user);
+    //event FuturesForcedRelease(bytes32 indexed futuresContract, bool side, address user);
     event FuturesAssetCreated(bytes32 indexed futuresAsset, address baseToken, string priceUrl, string pricePath, uint256 maintenanceMargin);
     event FuturesContractCreated(bytes32 indexed futuresContract, bytes32 asset, uint256 expirationBlock, uint256 multiplier, uint256 fundingRate, bool perpetual);
     event PositionLiquidated(bytes32 indexed positionHash, uint256 price);
-    event FuturesMarginAdded(address indexed user, bytes32 indexed futuresContract, bool side, uint64 marginToAdd);
+    event FuturesMarginUpdated(address indexed user, bytes32 indexed futuresContract, bool side, uint64 marginToAdd);
  
     // Fee change event
     event FeeChange(uint256 indexed makerFee, uint256 indexed takerFee);
 
+    // Fee account changed event
+    event FeeAccountChanged(address indexed newFeeAccount);
+
     // Log event, logs errors in contract execution (for internal use)
     event LogError(uint8 indexed errorId, bytes32 indexed makerOrderHash, bytes32 indexed takerOrderHash);
     //event LogErrorLight(uint8 errorId);
-    event LogUint(uint8 id, uint256 value);
-    event LogBytes(uint8 id, bytes32 value);
-    //event LogBool(uint8 id, bool value);
-    //event LogAddress(uint8 id, address value);
-
+    // event LogUint(uint8 id, uint256 value);
+    // event LogBytes(uint8 id, bytes32 value);
 
     // Constructor function, initializes the contract and sets the core variables
-    function Exchange(address feeAccount_, uint256 makerFee_, uint256 takerFee_, address exchangeContract_, address DmexOracleContract_, address poolAddress) {
+    function DMEX_Trading(address feeAccount_, uint256 makerFee_, uint256 takerFee_, address exchangeContract_, address DmexOracleContract_, address poolAddress) {
         owner               = msg.sender;
         feeAccount          = feeAccount_;
         makerFee            = makerFee_;
@@ -308,6 +257,24 @@ contract Exchange {
         takerFee                = takerFee_;
 
         emit FeeChange(makerFee, takerFee);
+    }
+
+    // Change fee account
+    function changeFeeAccount (address feeAccount_) onlyOwner {
+        if (feeAccountChangeDisabled) revert();
+        feeAccount = feeAccount_;
+        emit FeeAccountChanged(feeAccount_);
+    }
+
+    // Change thew funding interval
+    function changeFundingInterval(uint256 _newInterval) onlyOwner returns (bool _success)
+    {
+        fundingInterval = _newInterval;
+    }
+
+    // Disable future fee account change
+    function disableFeeAccountChange() onlyOwner {
+        feeAccountChangeDisabled = true;
     }
 
     // Adds or disables an admin account
@@ -354,7 +321,7 @@ contract Exchange {
     struct FuturesOrderPair {
         uint256 makerNonce;                 // maker order nonce, makes the order unique
         uint256 takerNonce;                 // taker order nonce
-        //uint256 takerGasFee;                // taker gas fee, taker pays the gas
+
         uint256 takerIsBuying;              // true/false taker is the buyer
 
         address maker;                      // address of the maker
@@ -369,14 +336,12 @@ contract Exchange {
         uint256 makerPrice;                 // maker order price in wei (18 decimal precision)
         uint256 takerPrice;                 // taker order price in wei (18 decimal precision)
 
-        uint256 makerLeverage;              // the amount of collateral provided by maker (8 decimals)
-        uint256 takerLeverage;              // the amount of collateral provided by taker (8 decimals)
+        uint256 makerLeverage;              // maker leverage
+        uint256 takerLeverage;              // taker leverage
 
         bytes32 futuresContract;            // the futures contract being traded
 
         address baseToken;                  // the address of the base token for futures contract
-        // uint256 floorPrice;                 // floor price of futures contract
-        // uint256 capPrice;                   // cap price of futures contract
 
         bytes32 makerPositionHash;          // hash for maker position
         bytes32 makerInversePositionHash;   // hash for inverse maker position 
@@ -388,10 +353,10 @@ contract Exchange {
     // Structure that holds trade values, used inside the trade() function
     struct FuturesTradeValues {
         uint256 qty;                    // amount to be trade
-        uint256 makerProfit;            // holds maker profit value
-        uint256 makerLoss;              // holds maker loss value
-        uint256 takerProfit;            // holds taker profit value
-        uint256 takerLoss;              // holds taker loss value
+        uint256 makerProfit;            // holds profit value
+        uint256 makerLoss;              // holds loss value
+        uint256 takerProfit;            // holds loss value
+        uint256 takerLoss;              // holds loss value
         uint256 makerBalance;           // holds maker balance value
         uint256 takerBalance;           // holds taker balance value
         uint256 makerReserve;           // holds taker reserved value
@@ -400,6 +365,9 @@ contract Exchange {
         uint256 takerTradeCollateral;   // holds taker collateral value for trade
         uint256 makerFee;
         uint256 takerFee;
+        address pool;
+        bool[3] makerBoolValues;
+        bool[3] takerBoolValues;
     }
 
 
@@ -529,11 +497,6 @@ contract Exchange {
             takerInversePositionHash    : keccak256(this, tradeAddresses[1], futuresContractHash, !takerIsBuying)
 
         });
-
-
-       
-
-//--> 44 000
     
         // Valifate size and price values
         if (!validateUint128(t.makerAmount) || !validateUint128(t.takerAmount) || !validateUint64(t.makerPrice) || !validateUint64(t.takerPrice))
@@ -542,15 +505,12 @@ contract Exchange {
             return 0; 
         }
 
-
         // Check if futures contract has expired already
         if ((!futuresContracts[t.futuresContract].perpetual && block.number > futuresContracts[t.futuresContract].expirationBlock) || futuresContracts[t.futuresContract].closed == true || futuresContracts[t.futuresContract].broken == true)
         {
             emit LogError(uint8(Errors.FUTURES_CONTRACT_EXPIRED), t.makerOrderHash, t.takerOrderHash);
             return 0; // futures contract is expired
         }
-
-
 
         // Checks the signature for the maker order
         if (ecrecover(keccak256("\x19Ethereum Signed Message:\n32", t.makerOrderHash), v[0], rs[0], rs[1]) != t.maker)
@@ -571,9 +531,14 @@ contract Exchange {
         {
             emit LogError(uint8(Errors.INVALID_PRICE), t.makerOrderHash, t.takerOrderHash);
             return 0; // prices don't match
-        }      
+        }
 
-//--> 54 000         
+        // trades between pools and trades without a pool are not allowed
+        if ((pools[t.maker] && pools[t.taker]) || (!pools[t.maker] && !pools[t.taker]))
+        {
+            emit LogError(uint8(Errors.POOL_MISUSE), t.makerOrderHash, t.takerOrderHash);
+            return 0; // trade between pools
+        }           
         
 
         uint256[4] memory balances = DMEX_Base(exchangeContract).getMakerTakerBalances(t.baseToken, t.maker, t.taker);
@@ -581,10 +546,6 @@ contract Exchange {
         // Initializing trade values structure 
         FuturesTradeValues memory tv = FuturesTradeValues({
             qty                 : 0,
-            makerProfit         : 0,
-            makerLoss           : 0,
-            takerProfit         : 0,
-            takerLoss           : 0,
             makerBalance        : balances[0], 
             takerBalance        : balances[1],  
             makerReserve        : balances[2],  
@@ -592,14 +553,15 @@ contract Exchange {
             makerTradeCollateral: 0,
             takerTradeCollateral: 0,
             makerFee            : min(makerFee, tradeValues[9]),
-            takerFee            : min(takerFee, tradeValues[10])
+            takerFee            : min(takerFee, tradeValues[10]),
+            makerProfit         : 0,
+            makerLoss           : 0,
+            takerProfit         : 0,
+            takerLoss           : 0,
+            pool                : pools[t.maker] ? t.maker : t.taker,
+            makerBoolValues     : [false, false, false],
+            takerBoolValues     : [false, false, false]
         });
-
-//--> 60 000
-
-
-
-
 
         // traded quantity is the smallest quantity between the maker and the taker, takes into account amounts already filled on the orders
         // and open inverse positions
@@ -618,248 +580,89 @@ contract Exchange {
             tv.qty = min(tv.qty, retrievePosition(t.takerInversePositionHash)[0]);
         }
 
-        tv.makerTradeCollateral = calculateCollateral(tv.qty, t.makerPrice, t.makerLeverage, t.futuresContract);
-        tv.takerTradeCollateral = calculateCollateral(tv.qty, t.makerPrice, t.takerLeverage, t.futuresContract);
+        tv.makerTradeCollateral = calculateCollateral(tv.qty, t.makerPrice, t.makerLeverage, t.futuresContract, tv.makerFee);
+        tv.takerTradeCollateral = calculateCollateral(tv.qty, t.makerPrice, t.takerLeverage, t.futuresContract, tv.takerFee);
 
-
-//--> 64 000       
-        
-        if (tv.qty == 0)
+        if (((!positionExists(t.makerInversePositionHash) && !positionExists(t.makerPositionHash)) || positionExists(t.makerPositionHash)) && !pools[t.maker])
         {
-            // no qty left on orders
-            emit LogError(uint8(Errors.ORDER_ALREADY_FILLED), t.makerOrderHash, t.takerOrderHash);
-            return 0;
+            // check if maker has enough balance   
+            if (safeSub(tv.makerBalance,tv.makerReserve) < safeMul(tv.makerTradeCollateral, 1e10))
+            {
+                tv.qty =    safeMul(
+                                tv.qty,                                
+                                safeSub(
+                                    tv.makerBalance,
+                                    tv.makerReserve
+                                )
+                            ) 
+                            / 
+                            safeMul(tv.makerTradeCollateral, 1e10);
+            }
         }
 
-        // Cheks that gas fee is not higher than 10%
-        // if (safeMul(t.takerGasFee, 20) > calculateTradeValue(tv.qty, t.makerPrice, t.futuresContract))
-        // {
-        //     emit LogError(uint8(Errors.GAS_TOO_HIGH), t.makerOrderHash, t.takerOrderHash);
-        //     return 0;
-        // } // takerGasFee too high
-
-
-//--> 66 000
+        if (((!positionExists(t.takerInversePositionHash) && !positionExists(t.takerPositionHash)) || positionExists(t.takerPositionHash)) && !pools[t.taker])
+        {            
+            // check if taker has enough balance
+            if (safeSub(tv.takerBalance,tv.takerReserve) < safeMul(tv.takerTradeCollateral, 1e10))
+            {                
+                tv.qty =    safeMul(
+                                tv.qty,
+                                safeSub(
+                                    tv.takerBalance,
+                                    tv.takerReserve
+                                )  
+                            ) 
+                            / 
+                            safeMul(tv.takerTradeCollateral, 1e10);
+            }
+        }
         
-
        
-
-        /*------------- Maker long, Taker short -------------*/
-        if (!takerIsBuying)
-        {     
-            
-      
+        if (!takerIsBuying) /*------------- Maker long, Taker short -------------*/
+        {       
             // position actions for maker
             if (!positionExists(t.makerInversePositionHash) && !positionExists(t.makerPositionHash))
             {
-
-
-                // check if maker has enough balance   
-                if (safeSub(tv.makerBalance,tv.makerReserve) < safeMul(tv.makerTradeCollateral, 1e10))
-                {
-                    // maker out of balance
-                    emit LogError(uint8(Errors.OUT_OF_BALANCE), t.makerOrderHash, t.takerOrderHash);
-                    return 0; 
-                }
-
-                updateBalances(
-                    t.futuresContract, 
-                    [
-                        t.baseToken, // base token
-                        t.maker // make address
-                    ], 
-                    t.makerPositionHash,  // position hash
-                    [
-                        tv.qty, // qty
-                        t.makerPrice,  // price
-                        tv.makerFee, // fee
-                        0, // profit
-                        0, // loss
-                        tv.makerBalance, // balance
-                        0, // gasFee
-                        tv.makerReserve, // reserve
-                        t.makerLeverage // leverage
-                    ], 
-                    [
-                        true, // newPostion (if true position is new)
-                        true, // side (if true - long)
-                        false // increase position (if true)
-                    ]
-                );
-
+                tv.makerBoolValues = [true, true, false]; // [newPosition, side, increasePositon]
             } else {               
                 
                 if (positionExists(t.makerPositionHash))
                 {
-                    // check if maker has enough balance            
-                    if (safeSub(tv.makerBalance,tv.makerReserve) < safeMul(tv.makerTradeCollateral, 1e10))
-                    {
-                        // maker out of balance
-                        emit LogError(uint8(Errors.OUT_OF_BALANCE), t.makerOrderHash, t.takerOrderHash);
-                        return 0; 
-                    }
-
                     // increase position size
-                    // updatePositionSize(t.makerPositionHash, safeAdd(retrievePosition(t.makerPositionHash)[0], tv.qty), t.makerPrice);
-                
-                    updateBalances(
-                        t.futuresContract, 
-                        [
-                            t.baseToken,  // base token
-                            t.maker // make address
-                        ], 
-                        t.makerPositionHash, // position hash
-                        [
-                            tv.qty, // qty
-                            t.makerPrice, // price
-                            tv.makerFee, // fee
-                            0, // profit
-                            0, // loss
-                            tv.makerBalance, // balance
-                            0, // gasFee
-                            tv.makerReserve, // reserve
-                            t.makerLeverage // leverage
-                        ], 
-                        [
-                            false, // newPostion (if true position is new)
-                            true, // side (if true - long)
-                            true // increase position (if true)
-                        ]
-                    );
+                    tv.makerBoolValues = [false, true, true]; // [newPosition, side, increasePositon]
                 }
                 else
                 {
-
                     // close/partially close existing position
-                    // updatePositionSize(t.makerInversePositionHash, safeSub(retrievePosition(t.makerInversePositionHash)[0], tv.qty), 0);
                     if (t.makerPrice < retrievePosition(t.makerInversePositionHash)[1])
                     {
                         // user has made a profit
-                        //tv.makerProfit                    = safeMul(safeSub(retrievePosition(t.makerInversePositionHash)[1], t.makerPrice), tv.qty) / t.makerPrice;
                         tv.makerProfit                      = calculateProfit(t.makerPrice, retrievePosition(t.makerInversePositionHash)[1], tv.qty, futuresContractHash, true);
                     }
                     else
                     {
                         // user has made a loss
-                        //tv.makerLoss                      = safeMul(safeSub(t.makerPrice, retrievePosition(t.makerInversePositionHash)[1]), tv.qty) / t.makerPrice;    
                         tv.makerLoss                        = calculateLoss(t.makerPrice, retrievePosition(t.makerInversePositionHash)[1], tv.qty, futuresContractHash, true);                                        
                     }
 
-                    updateBalances(
-                        t.futuresContract, 
-                        [
-                            t.baseToken, // base token
-                            t.maker // make address
-                        ], 
-                        t.makerInversePositionHash, // position hash
-                        [
-                            tv.qty, // qty
-                            t.makerPrice, // price
-                            tv.makerFee, // fee
-                            tv.makerProfit,  // profit
-                            tv.makerLoss,  // loss
-                            tv.makerBalance, // balance
-                            0, // gasFee
-                            tv.makerReserve, // reserve
-                            t.makerLeverage // leverage
-                        ], 
-                        [
-                            false, // newPostion (if true position is new)
-                            true, // side (if true - long)
-                            false // increase position (if true)
-                        ]
-                    );
+                    tv.makerBoolValues = [false, true, false]; // [newPosition, side, increasePositon]
                 }                
-            }
-
-           
-
+            }            
 
             // position actions for taker
             if (!positionExists(t.takerInversePositionHash) && !positionExists(t.takerPositionHash))
-            {
-                
-                // check if taker has enough balance
-                if (safeSub(tv.takerBalance,tv.takerReserve) < safeMul(tv.takerTradeCollateral, 1e10))
-                {
-                    // maker out of balance
-                    emit LogError(uint8(Errors.OUT_OF_BALANCE), t.makerOrderHash, t.takerOrderHash);
-                    return 0; 
-                }
-                
+            {        
                 // create new position
-                //recordNewPosition(t.takerPositionHash, tv.qty, t.makerPrice, 0, block.number);
-                
-                updateBalances(
-                    t.futuresContract, 
-                    [
-                        t.baseToken, // base token
-                        t.taker // make address
-                    ], 
-                    t.takerPositionHash, // position hash
-                    [
-                        tv.qty, // qty
-                        t.makerPrice,  // price
-                        tv.takerFee, // fee
-                        0, // profit
-                        0,  // loss
-                        tv.takerBalance,  // balance
-                        0, // gasFee
-                        tv.takerReserve, // reserve
-                        t.takerLeverage // leverage
-                    ], 
-                    [
-                        true, // newPostion (if true position is new)
-                        false, // side (if true - long)
-                        false // increase position (if true)
-                    ]
-                );
-
+                tv.takerBoolValues = [true, false, false]; // [newPosition, side, increasePositon]
             } else {
                 if (positionExists(t.takerPositionHash))
                 {
-                    // check if taker has enough balance
-                    //if (safeAdd(safeAdd(safeMul(safeSub(t.capPrice, t.makerPrice), tv.qty)  / t.capPrice, safeMul(tv.qty, takerFee) / (1 ether))  * 1e10, t.takerGasFee) > safeSub(balances[1],tv.takerReserve))
-                    if (safeSub(tv.takerBalance,tv.takerReserve) < safeMul(tv.takerTradeCollateral, 1e10))
-                    {
-                        // maker out of balance
-                        emit LogError(uint8(Errors.OUT_OF_BALANCE), t.makerOrderHash, t.takerOrderHash);
-                        return 0; 
-                    }
-
                     // increase position size
-                    //updatePositionSize(t.takerPositionHash, safeAdd(retrievePosition(t.takerPositionHash)[0], tv.qty), t.makerPrice);
-                
-                    updateBalances(
-                        t.futuresContract, 
-                        [
-                            t.baseToken,  // base token
-                            t.taker // make address
-                        ], 
-                        t.takerPositionHash, // position hash
-                        [
-                            tv.qty, // qty
-                            t.makerPrice, // price
-                            tv.takerFee, // fee
-                            0, // profit
-                            0, // loss
-                            tv.takerBalance, // balance
-                            0, // gasFee
-                            tv.takerReserve, // reserve
-                            t.takerLeverage // leverage
-                        ], 
-                        [
-                            false, // newPostion (if true position is new)
-                            false, // side (if true - long)
-                            true // increase position (if true)
-                        ]
-                    );
+                    tv.takerBoolValues = [false, false, true]; // [newPosition, side, increasePositon]
                 }
                 else
                 {    
                     // close/partially close existing position
-                    //updatePositionSize(t.takerInversePositionHash, safeSub(retrievePosition(t.takerInversePositionHash)[0], tv.qty), 0);
-                    
                     if (t.makerPrice > retrievePosition(t.takerInversePositionHash)[1])
                     {
                         // user has made a profit
@@ -871,120 +674,28 @@ contract Exchange {
                         tv.takerLoss                        = calculateLoss(t.makerPrice, retrievePosition(t.takerInversePositionHash)[1], tv.qty, futuresContractHash, false); 
                     }
 
-                  
-
-                    updateBalances(
-                        t.futuresContract, 
-                        [
-                            t.baseToken, // base token
-                            t.taker // make address
-                        ], 
-                        t.takerInversePositionHash, // position hash
-                        [
-                            tv.qty, // qty
-                            t.makerPrice, // price
-                            tv.takerFee, // fee
-                            tv.takerProfit, // profit
-                            tv.takerLoss, // loss
-                            tv.takerBalance,  // balance
-                            0,  // gasFee
-                            tv.takerReserve, // reserve
-                            t.takerLeverage // leverage
-                        ], 
-                        [
-                            false, // newPostion (if true position is new)
-                            false, // side (if true - long)
-                            false // increase position (if true)
-                        ]
-                    );
+                    tv.takerBoolValues = [false, false, false]; // [newPosition, side, increasePositon]
                 }
             }
-        }
-
-
-        /*------------- Maker short, Taker long -------------*/
-
-        else
+        }        
+        else /*------------- Maker short, Taker long -------------*/
         {      
+            
             // position actions for maker
             if (!positionExists(t.makerInversePositionHash) && !positionExists(t.makerPositionHash))
             {
-                // check if maker has enough balance
-                if (safeSub(tv.makerBalance,tv.makerReserve) < safeMul(tv.makerTradeCollateral, 1e10))
-                {
-                    // maker out of balance
-                    emit LogError(uint8(Errors.OUT_OF_BALANCE), t.makerOrderHash, t.takerOrderHash);
-                    return 0; 
-                }
-
                 // create new position
-                //recordNewPosition(t.makerPositionHash, tv.qty, t.makerPrice, 0, block.number);
-                updateBalances(
-                    t.futuresContract, 
-                    [
-                        t.baseToken,   // base token
-                        t.maker // make address
-                    ], 
-                    t.makerPositionHash, // position hash
-                    [
-                        tv.qty, // qty
-                        t.makerPrice, // price
-                        tv.makerFee, // fee
-                        0, // profit
-                        0, // loss
-                        tv.makerBalance, // balance
-                        0, // gasFee
-                        tv.makerReserve, // reserve
-                        t.makerLeverage // leverage
-                    ], 
-                    [
-                        true, // newPostion (if true position is new)
-                        false, // side (if true - long)
-                        false // increase position (if true)
-                    ]
-                );
+                tv.makerBoolValues = [true, false, false]; // [newPosition, side, increasePositon]
+                
 
             } else {
                 if (positionExists(t.makerPositionHash))
                 {
-                    // check if maker has enough balance
-                    if (safeSub(tv.makerBalance,tv.makerReserve) < safeMul(tv.makerTradeCollateral, 1e10))
-                    {
-                        // maker out of balance
-                        emit LogError(uint8(Errors.OUT_OF_BALANCE), t.makerOrderHash, t.takerOrderHash);
-                        return 0; 
-                    }
-
                     // increase position size
-                    updateBalances(
-                        t.futuresContract, 
-                        [
-                            t.baseToken,  // base token
-                            t.maker // make address
-                        ], 
-                        t.makerPositionHash, // position hash
-                        [
-                            tv.qty, // qty
-                            t.makerPrice, // price
-                            tv.makerFee, // fee
-                            0, // profit
-                            0, // loss
-                            tv.makerBalance, // balance
-                            0, // gasFee
-                            tv.makerReserve, // reserve
-                            t.makerLeverage // leverage
-                        ], 
-                        [
-                            false, // newPostion (if true position is new)
-                            false, // side (if true - long)
-                            true // increase position (if true)
-                        ]
-                    );
+                    tv.makerBoolValues = [false, false, true]; // [newPosition, side, increasePositon]
                 }
                 else
                 {
-
-
                     // close/partially close existing position
                     if (t.makerPrice > retrievePosition(t.makerInversePositionHash)[1])
                     {
@@ -997,105 +708,19 @@ contract Exchange {
                         tv.makerLoss                        = calculateLoss(t.makerPrice, retrievePosition(t.makerInversePositionHash)[1], tv.qty, futuresContractHash, false);                               
                     }
 
-                    updateBalances(
-                        t.futuresContract, 
-                        [
-                            t.baseToken, // base token
-                            t.maker // user address
-                        ], 
-                        t.makerInversePositionHash, // position hash
-                        [
-                            tv.qty, // qty
-                            t.makerPrice, // price
-                            tv.makerFee, // fee
-                            tv.makerProfit,  // profit
-                            tv.makerLoss, // loss
-                            tv.makerBalance, // balance
-                            0, // gasFee
-                            tv.makerReserve, // reserve
-                            t.makerLeverage // leverage
-                        ], 
-                        [
-                            false, // newPostion (if true position is new)
-                            false, // side (if true - long)
-                            false // increase position (if true)
-                        ]
-                    );
+                    tv.makerBoolValues = [false, false, false]; // [newPosition, side, increasePositon]
                 }
-            }
+            }    
 
             // position actions for taker
             if (!positionExists(t.takerInversePositionHash) && !positionExists(t.takerPositionHash))
             {
-                // check if taker has enough balance
-                if (safeSub(tv.takerBalance,tv.takerReserve) < safeMul(tv.takerTradeCollateral, 1e10))
-                {
-                    // maker out of balance
-                    emit LogError(uint8(Errors.OUT_OF_BALANCE), t.makerOrderHash, t.takerOrderHash);
-                    return 0; 
-                }
-
-                updateBalances(
-                    t.futuresContract, 
-                    [
-                        t.baseToken,  // base token
-                        t.taker // user address
-                    ], 
-                    t.takerPositionHash, // position hash
-                    [
-                        tv.qty, // qty
-                        t.makerPrice, // price
-                        tv.takerFee, // fee
-                        0,  // profit
-                        0,  // loss
-                        tv.takerBalance, // balance
-                        0, // gasFee
-                        tv.takerReserve, // reserve
-                        t.takerLeverage // leverage
-                    ], 
-                    [
-                        true, // newPostion (if true position is new)
-                        true, // side (if true - long)
-                        false // increase position (if true)
-                    ]
-                );
-
+                tv.takerBoolValues = [true, true, false]; // [newPosition, side, increasePositon]
             } else {
                 if (positionExists(t.takerPositionHash))
                 {
-                    // check if taker has enough balance
-                    if (safeSub(tv.takerBalance,tv.takerReserve) < safeMul(tv.takerTradeCollateral, 1e10))
-                    {
-                        // maker out of balance
-                        emit LogError(uint8(Errors.OUT_OF_BALANCE), t.makerOrderHash, t.takerOrderHash);
-                        return 0; 
-                    }
-                    
                     // increase position size
-                    updateBalances(
-                        t.futuresContract, 
-                        [
-                            t.baseToken,  // base token
-                            t.taker // user address
-                        ], 
-                        t.takerPositionHash, // position hash
-                        [
-                            tv.qty, // qty
-                            t.makerPrice, // price
-                            tv.takerFee, // fee
-                            0, // profit
-                            0, // loss
-                            tv.takerBalance, // balance
-                            0, // gasFee
-                            tv.takerReserve, // reserve
-                            t.takerLeverage // leverage
-                        ], 
-                        [
-                            false, // newPostion (if true position is new)
-                            true, // side (if true - long)
-                            true // increase position (if true)
-                        ]
-                    );
+                    tv.takerBoolValues = [false, true, true]; // [newPosition, side, increasePositon]
                 }
                 else
                 {
@@ -1110,35 +735,120 @@ contract Exchange {
                     {
                         // user has made a loss
                         tv.takerLoss                        = calculateLoss(t.makerPrice, retrievePosition(t.takerInversePositionHash)[1], tv.qty, futuresContractHash, true);                                  
-                    }                   
+                    }   
 
-                    updateBalances(
-                        t.futuresContract, 
-                        [
-                            t.baseToken,   // base toke
-                            t.taker // user address
-                        ], 
-                        t.takerInversePositionHash,  // position hash
-                        [
-                            tv.qty, // qty
-                            t.makerPrice, // price
-                            tv.takerFee, // fee
-                            tv.takerProfit, // profit
-                            tv.takerLoss, // loss
-                            tv.takerBalance, // balance
-                            0, // gasFee
-                            tv.takerReserve, // reserve
-                            t.takerLeverage // leverage
-                        ], 
-                        [
-                            false, // newPostion (if true position is new)
-                            true, // side (if true - long) 
-                            false // increase position (if true)
-                        ]
-                    );
+                    tv.takerBoolValues = [false, true, false]; // [newPosition, side, increasePositon]                
                 }
-            }           
+            }                      
         }
+
+
+        if (tv.makerLoss > 0)
+        {
+            if (!updateBalances(
+                    t.futuresContract, 
+                    [
+                        t.baseToken, // base token
+                        t.maker,  // user address
+                        tv.pool
+                    ], 
+                    !tv.makerBoolValues[0] && !tv.makerBoolValues[2] ? t.makerInversePositionHash : t.makerPositionHash, // position hash
+                    [
+                        tv.qty, // qty
+                        t.makerPrice, // price
+                        tv.makerFee, // fee
+                        tv.makerProfit,  // profit
+                        tv.makerLoss, // loss
+                        tv.makerBalance, // balance
+                        0, // gasFee
+                        tv.makerReserve, // reserve
+                        t.makerLeverage // leverage
+                    ], 
+                    tv.makerBoolValues
+                )
+            )
+            {
+                futuresContracts[t.futuresContract].broken = true;
+                forceReleaseReserveOperation(t.futuresContract, tv.pool == t.maker ? !tv.takerBoolValues[1] : !tv.makerBoolValues[1], tv.pool == t.maker ? t.taker : t.maker);
+                return;
+            }
+
+            updateBalances(
+                t.futuresContract, 
+                [
+                    t.baseToken,   // base toke
+                    t.taker, // user address
+                    tv.pool
+                ], 
+                !tv.takerBoolValues[0] && !tv.takerBoolValues[2] ? t.takerInversePositionHash : t.takerPositionHash,  // position hash
+                [
+                    tv.qty, // qty
+                    t.makerPrice, // price
+                    tv.takerFee, // fee
+                    tv.takerProfit, // profit
+                    tv.takerLoss, // loss
+                    tv.takerBalance, // balance
+                    0, // gasFee
+                    tv.takerReserve, // reserve
+                    t.takerLeverage // leverage
+                ], 
+                tv.takerBoolValues
+            ); 
+        }
+        else
+        {
+            if (!updateBalances(
+                    t.futuresContract, 
+                    [
+                        t.baseToken,   // base toke
+                        t.taker, // user address
+                        tv.pool
+                    ], 
+                    !tv.takerBoolValues[0] && !tv.takerBoolValues[2] ? t.takerInversePositionHash : t.takerPositionHash,  // position hash
+                    [
+                        tv.qty, // qty
+                        t.makerPrice, // price
+                        tv.takerFee, // fee
+                        tv.takerProfit, // profit
+                        tv.takerLoss, // loss
+                        tv.takerBalance, // balance
+                        0, // gasFee
+                        tv.takerReserve, // reserve
+                        t.takerLeverage // leverage
+                    ], 
+                    tv.takerBoolValues
+                )
+            )
+            {
+                futuresContracts[t.futuresContract].broken = true;               
+                forceReleaseReserveOperation(t.futuresContract, tv.pool == t.maker ? !tv.takerBoolValues[1] : !tv.makerBoolValues[1], tv.pool == t.maker ? t.taker : t.maker);       
+                return;
+            }
+
+            updateBalances(
+                t.futuresContract, 
+                [
+                    t.baseToken, // base token
+                    t.maker,  // user address
+                    tv.pool
+                ], 
+                !tv.makerBoolValues[0] && !tv.makerBoolValues[2] ? t.makerInversePositionHash : t.makerPositionHash, // position hash
+                [
+                    tv.qty, // qty
+                    t.makerPrice, // price
+                    tv.makerFee, // fee
+                    tv.makerProfit,  // profit
+                    tv.makerLoss, // loss
+                    tv.makerBalance, // balance
+                    0, // gasFee
+                    tv.makerReserve, // reserve
+                    t.makerLeverage // leverage
+                ], 
+                tv.makerBoolValues
+            ); 
+        }
+
+        
 
 //--> 220 000
         orderFills[t.makerOrderHash]            = safeAdd(orderFills[t.makerOrderHash], tv.qty); // increase the maker order filled amount
@@ -1154,15 +864,7 @@ contract Exchange {
     function calculateProfit(uint256 closingPrice, uint256 entryPrice, uint256 qty, bytes32 futuresContractHash, bool side) public view returns (uint256)
     {
         uint256 multiplier = futuresContracts[futuresContractHash].multiplier;
-
-        if (side)
-        {           
-            return safeMul(safeMul(safeSub(entryPrice, closingPrice), qty), multiplier )  / 1e16;            
-        }
-        else
-        {
-            return safeMul(safeMul(safeSub(closingPrice, entryPrice), qty), multiplier )  / 1e16; 
-        }       
+        return safeMul(safeMul(safeSub(side ? entryPrice : closingPrice, side ? closingPrice : entryPrice), qty), multiplier )  / 1e16;            
     }
 
     function calculateTradeValue(uint256 qty, uint256 price, bytes32 futuresContractHash)  public view returns (uint256)
@@ -1171,31 +873,21 @@ contract Exchange {
         return safeMul(safeMul(safeMul(qty, price), 1e2), multiplier) / 1e8 ;
     }
 
-
-
     function calculateLoss(uint256 closingPrice, uint256 entryPrice, uint256 qty,  bytes32 futuresContractHash, bool side) public view returns (uint256)
     {
         uint256 multiplier = futuresContracts[futuresContractHash].multiplier;
 
-        if (side)
-        {
-            return safeMul(safeMul(safeSub(closingPrice, entryPrice), qty), multiplier) / 1e16 ;
-        }
-        else
-        {
-            return safeMul(safeMul(safeSub(entryPrice, closingPrice), qty), multiplier) / 1e16 ; 
-        }
-        
+        return safeMul(safeMul(safeSub(side ? closingPrice : entryPrice, side ? entryPrice : closingPrice), qty), multiplier) / 1e16 ;        
     }
 
-    function calculateCollateral (uint256 qty, uint256 price, uint256 leverage, bytes32 futuresContractHash) view returns (uint256) // 1e8
+    function calculateCollateral (uint256 qty, uint256 price, uint256 leverage, bytes32 futuresContractHash, uint256 fee) view returns (uint256) // 1e8
     {
         uint256 multiplier = futuresContracts[futuresContractHash].multiplier;
         uint256 collateral;
             
-        collateral = safeMul(safeMul(price, qty), multiplier) / 1e16 / leverage;
+        collateral = safeMul(safeMul(price, qty), multiplier) / 1e8 / leverage;
 
-        return collateral;               
+        return safeAdd(collateral, calculateFee(qty, price, fee, futuresContractHash));               
     }
 
     function calculateProportionalMargin(uint256 currQty, uint256 newQty, uint256 margin) view returns (uint256) // 1e8
@@ -1209,7 +901,7 @@ contract Exchange {
         uint256 fundingRate = futuresContracts[futuresContractHash].fundingRate;
         uint256 multiplier = futuresContracts[futuresContractHash].multiplier;
 
-        uint256 fundingCost = safeMul(safeMul(safeMul(fundingBlocks, fundingRate), safeMul(qty, price)/1e8)/1e18, multiplier)/1e8;
+        uint256 fundingCost = safeMul(safeMul(safeMul(safeMul(fundingBlocks/fundingInterval, fundingInterval), fundingRate), safeMul(qty, price)/1e8)/1e18, multiplier)/1e8;
 
         return fundingCost;  
     }
@@ -1217,21 +909,17 @@ contract Exchange {
     function calculateFee (uint256 qty, uint256 tradePrice, uint256 fee, bytes32 futuresContractHash)  public view returns (uint256)
     {
         return safeMul(calculateTradeValue(qty, tradePrice, futuresContractHash), fee / 1e10) / 1e18;
-    }
-     
-
-    
-
-    
+    }  
 
 
     // Update user balance
-    function updateBalances (bytes32 futuresContract, address[2] addressValues, bytes32 positionHash, uint256[9] uintValues, bool[3] boolValues) private
+    function updateBalances (bytes32 futuresContract, address[3] addressValues, bytes32 positionHash, uint256[9] uintValues, bool[3] boolValues) private returns (bool)
     {
         /*
             addressValues
             [0] baseToken
             [1] user
+            [2] pool address
 
             uintValues
             [0] qty
@@ -1251,12 +939,15 @@ contract Exchange {
 
         */
 
+
         // pam = [fee value, collateral, fundignCost, payableFundingCost]               
         uint256[3] memory pam = [
-            safeAdd(safeMul(calculateFee(uintValues[0], uintValues[1], uintValues[2], futuresContract), 1e10), uintValues[6]), 
-            calculateCollateral(uintValues[0], uintValues[1], uintValues[8], futuresContract),
+            safeMul(calculateFee(uintValues[0], uintValues[1], uintValues[2], futuresContract), 1e10), 
+            calculateCollateral(uintValues[0], uintValues[1], uintValues[8], futuresContract, 0),
             0
         ];
+
+
                
         if (boolValues[0] || boolValues[2])  
         {
@@ -1281,12 +972,10 @@ contract Exchange {
             {
                 pam[0] = 0;
             }
-            pam[2] = 0;
         } 
         else 
         {
             // Position exists, decreasing
-            //pam[1] = calculateCollateral(uintValues[0], retrievePosition(positionHash)[1], uintValues[8], futuresContract)-1;                          
             pam[1] = calculateProportionalMargin(retrievePosition(positionHash)[0], uintValues[0], retrievePosition(positionHash)[4]);
             
             updatePositionSize(positionHash, safeSub(retrievePosition(positionHash)[0], uintValues[0]),  uintValues[1], safeSub(retrievePosition(positionHash)[4], pam[1]));
@@ -1309,23 +998,37 @@ contract Exchange {
                 }
                 else
                 {
-                    // LogUint(13, safeSub(safeAdd(pam[0], pam[2]*1e10), safeMul(uintValues[3],1e10)));
-                    // return;
-                    subBalanceSubReserve(addressValues[0], addressValues[1], safeSub(safeAdd(pam[0], safeMul(pam[2], 1e10)), safeMul(uintValues[3],1e10)), pam[1]);
+
+                    if (!subBalanceSubReserve(addressValues[0], addressValues[1], safeSub(safeAdd(pam[0], safeMul(pam[2], 1e10)), safeMul(uintValues[3],1e10)), pam[1]))
+                    {
+                        return false;
+                    }
                 }                
             } 
             else 
             {   
                 // loss >= 0
-                subBalanceSubReserve(addressValues[0], addressValues[1], safeAdd(safeMul(uintValues[4],1e10), safeAdd(pam[0], safeMul(pam[2], 1e10))), pam[1]); // deduct loss from user balance
+                // deduct loss from user balance
+                if (!subBalanceSubReserve(addressValues[0], addressValues[1], safeAdd(safeMul(uintValues[4],1e10), safeAdd(pam[0], safeMul(pam[2], 1e10))), pam[1])) 
+                {
+                    return false;
+                }
             }     
 
         }          
         
-        if (safeAdd(pam[0], safeMul(pam[2], 1e10)) > 0)
+        //if (safeAdd(pam[0], safeMul(pam[2], 1e10)) > 0)
+        if (pam[0] > 0)
         {
-            addBalance(addressValues[0], feeAccount, DMEX_Base(exchangeContract).balanceOf(addressValues[0], feeAccount), safeAdd(pam[0], safeMul(pam[2], 1e10))); // send fee to feeAccount
+            addBalance(addressValues[0], feeAccount, DMEX_Base(exchangeContract).balanceOf(addressValues[0], feeAccount), pam[0]); // send fee to feeAccount
         }
+
+        if (pam[2] > 0)
+        {
+            addBalance(addressValues[0], addressValues[2], DMEX_Base(exchangeContract).balanceOf(addressValues[0], addressValues[2]), safeMul(pam[2], 1e10));
+        }
+
+        return true;
         
     }
 
@@ -1391,32 +1094,28 @@ contract Exchange {
 
     function positionExists (bytes32 positionHash) internal view returns (bool)
     {
-        if (retrievePosition(positionHash)[0] == 0)
-        {
-            return false;
-        }
-        else
-        {
-            return true;
-        }
+        return retrievePosition(positionHash)[0] != 0;
     }
 
 
     // This function allows the user to manually release collateral in case the oracle service does not provide the price during the inactivityReleasePeriod
     function forceReleaseReserve (bytes32 futuresContract, bool side, address user) public
     {   
-        if (futuresContracts[futuresContract].expirationBlock == 0) throw;       
-        if (futuresContracts[futuresContract].expirationBlock > block.number) throw;
-        if (safeAdd(futuresContracts[futuresContract].expirationBlock, DMEX_Base(exchangeContract).getInactivityReleasePeriod()) > block.number) throw;  
-        
-
-        bytes32 positionHash = keccak256(this, user, futuresContract, side);
-        if (retrievePosition(positionHash)[1] == 0) throw;    
-  
+        if (futuresContracts[futuresContract].expirationBlock == 0) revert();       
+        if (futuresContracts[futuresContract].expirationBlock > block.number) revert();
+        if (safeAdd(futuresContracts[futuresContract].expirationBlock, DMEX_Base(exchangeContract).getInactivityReleasePeriod()) > block.number) revert();    
 
         futuresContracts[futuresContract].broken = true;
+        forceReleaseReserveOperation(futuresContract, side, user);
+    }
 
+    function forceReleaseReserveOperation(bytes32 futuresContract, bool side, address user) private
+    {
+        if (!futuresContracts[futuresContract].broken) revert();
+        bytes32 positionHash = keccak256(this, user, futuresContract, side);
         uint256[5] memory pos = retrievePosition(positionHash);
+        if (pos[0] == 0) revert();
+        
         FuturesContract cont = futuresContracts[futuresContract];
         address baseToken = futuresAssets[cont.asset].baseToken;
 
@@ -1429,8 +1128,7 @@ contract Exchange {
 
         updatePositionSize(positionHash, 0, 0, 0);
 
-        emit FuturesForcedRelease(futuresContract, side, user);
-
+        //emit FuturesForcedRelease(futuresContract, side, user);
     }
 
     function addBalance(address token, address user, uint256 balance, uint256 amount) private
@@ -1438,24 +1136,41 @@ contract Exchange {
         DMEX_Base(exchangeContract).setBalance(token, user, safeAdd(balance, amount));
     }
 
-    function subBalance(address token, address user, uint256 balance, uint256 amount) private
+    function subBalance(address token, address user, uint256 balance, uint256 amount) private returns (bool)
     {
+        if (balance < amount) return false;
         DMEX_Base(exchangeContract).setBalance(token, user, safeSub(balance, amount));
+        return true;
     }
 
-    function subBalanceAddReserve(address token, address user, uint256 subBalance, uint256 addReserve) private
+    function subBalanceAddReserve(address token, address user, uint256 subBalance, uint256 addReserve) private returns (bool)
     {
-        DMEX_Base(exchangeContract).subBalanceAddReserve(token, user, subBalance, safeMul(addReserve, 1e10));
+        if (!DMEX_Base(exchangeContract).subBalanceAddReserve(token, user, subBalance, safeMul(addReserve, 1e10)))
+        {
+            return false;
+        }
+
+        return true;
     }
 
-    function addBalanceSubReserve(address token, address user, uint256 addBalance, uint256 subReserve) private
+    function addBalanceSubReserve(address token, address user, uint256 addBalance, uint256 subReserve) private returns (bool)
     {
-        DMEX_Base(exchangeContract).addBalanceSubReserve(token, user, addBalance, safeMul(subReserve, 1e10));
+        if (!DMEX_Base(exchangeContract).addBalanceSubReserve(token, user, addBalance, safeMul(subReserve, 1e10)))
+        {
+            return false;
+        }
+
+        return true;
     }
 
-    function subBalanceSubReserve(address token, address user, uint256 subBalance, uint256 subReserve) private
+    function subBalanceSubReserve(address token, address user, uint256 subBalance, uint256 subReserve) private returns (bool)
     {
-        DMEX_Base(exchangeContract).subBalanceSubReserve(token, user, subBalance, safeMul(subReserve, 1e10));
+        if (!DMEX_Base(exchangeContract).subBalanceSubReserve(token, user, subBalance, safeMul(subReserve, 1e10)))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     function subReserve(address token, address user, uint256 reserve, uint256 amount) private 
@@ -1490,6 +1205,7 @@ contract Exchange {
         bool perpetual;
         uint256 profit;
         uint256 loss;
+        uint256 fundingCost;
     }
 
 
@@ -1501,17 +1217,17 @@ contract Exchange {
     function closeFuturesPositionInternal (bytes32 futuresContract, bool side, address user, address poolAddress, uint256 expirationFee) private returns (bool)
     {
         bytes32 positionHash = keccak256(this, user, futuresContract, side);        
-        bytes32 poolPositionHash = keccak256(this, poolAddress, futuresContract, !side);        
+        uint256[5] memory pos = retrievePosition(positionHash);        
 
-        if (futuresContracts[futuresContract].closed == false && futuresContracts[futuresContract].expirationBlock != 0) throw; // contract not yet settled
-        if (retrievePosition(positionHash)[1] == 0) throw; // position not found
-        if (retrievePosition(positionHash)[0] == 0) throw; // position already closed
+        if (futuresContracts[futuresContract].broken) revert(); // contract broken
+        if (futuresContracts[futuresContract].closed == false && futuresContracts[futuresContract].expirationBlock != 0) revert(); // contract not yet settled
+        if (pos[1] == 0) revert(); // position not found
+        if (pos[0] == 0) revert(); // position already closed
         if (pools[user]) return;
         if (!pools[poolAddress]) return;
-// 30 000 gas
-        
-        uint256 fee = min(expirationFee, takerFee);
 
+        uint256 fundingBlocks = safeSub(futuresContracts[futuresContract].closingBlock, pos[3]+1);
+        
         FuturesClosePositionValues memory v = FuturesClosePositionValues({
             baseToken       : getContractBaseToken(futuresContract),
             reserve         : 0,
@@ -1519,20 +1235,22 @@ contract Exchange {
             closingPrice    : futuresContracts[futuresContract].closingPrice,
             futuresContract : futuresContract,
             expirationBlock : futuresContracts[futuresContract].expirationBlock,
-            entryBlock      : retrievePosition(positionHash)[3],
+            entryBlock      : pos[3],
             collateral      : 0,
             totalPayable    : 0,
             closingBlock    : futuresContracts[futuresContract].closingBlock,
             liquidationPrice: calculateLiquidationPriceFromPositionHash(futuresContract, side, user),
-            closingFee      : calculateFee(retrievePosition(positionHash)[0], retrievePosition(positionHash)[1], fee, futuresContract),
+            closingFee      : calculateFee(pos[0], pos[1], min(expirationFee, takerFee), futuresContract),
             perpetual       : futuresContracts[futuresContract].perpetual,
             profit          : 0,
-            loss            : 0
+            loss            : 0,
+            fundingCost     : calculateFundingCost(pos[1], pos[0], fundingBlocks, futuresContract)
         });
 
         v.reserve = DMEX_Base(exchangeContract).getReserve(v.baseToken, user);
         v.balance = DMEX_Base(exchangeContract).balanceOf(v.baseToken, user);
-// 49 000        
+    
+
 
         if (( side && v.closingPrice <= v.liquidationPrice) ||
             (!side && v.closingPrice >= v.liquidationPrice) )
@@ -1541,28 +1259,31 @@ contract Exchange {
             return;
         }
 
+        v.collateral = pos[4];         
+        v.totalPayable = safeAdd(v.closingFee, v.fundingCost);
 
-// 48962
-
-        v.collateral = retrievePosition(positionHash)[4];         
-        v.totalPayable = safeAdd(v.closingFee, calculateFundingCost(retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], safeSub(v.closingBlock, v.entryBlock+1), futuresContract));
-
-
-// 52476
-        subReserve(
-            v.baseToken, 
-            user, 
-            v.reserve, 
-            v.collateral
-        );             
-// 63991
-
-        if (( side && v.closingPrice > retrievePosition(positionHash)[1]) ||
-            (!side && v.closingPrice < retrievePosition(positionHash)[1]))
+        if (( side && v.closingPrice > pos[1]) ||
+            (!side && v.closingPrice < pos[1]))
         {   
             // user made a profit
-            v.profit = calculateProfit(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, !side);
+            v.profit = calculateProfit(v.closingPrice, pos[1], pos[0], futuresContract, !side);
       
+            if (v.profit > safeAdd(v.fundingCost, v.closingFee/2))
+            {
+                if (!subBalance(v.baseToken, poolAddress, DMEX_Base(exchangeContract).balanceOf(v.baseToken, poolAddress), safeMul(safeSub(v.profit, safeAdd(v.fundingCost, v.closingFee/2)), 1e10)))
+                {
+                    // brake contract
+                    futuresContracts[futuresContract].broken = true;
+                    forceReleaseReserveOperation(futuresContract, side, user);
+                    return false;
+                }
+            }
+            else
+            {
+                addBalance(v.baseToken, poolAddress, DMEX_Base(exchangeContract).balanceOf(v.baseToken, poolAddress), safeMul(safeSub(safeAdd(v.fundingCost, v.closingFee/2), v.profit), 1e10)); 
+            }
+
+
             if (v.profit > v.totalPayable)
             {
                 addBalance(v.baseToken, user, v.balance, safeSub(safeMul(v.profit, 1e10), safeMul(v.totalPayable, 1e10))); 
@@ -1570,24 +1291,31 @@ contract Exchange {
             else
             {
                 subBalance(v.baseToken, user, v.balance, safeMul(min(v.collateral, safeSub(v.totalPayable, v.profit)), 1e10)); 
-            }
-
-            subBalance(v.baseToken, poolAddress, DMEX_Base(exchangeContract).balanceOf(v.baseToken, poolAddress), safeMul(v.profit, 1e10)); 
+            }            
         }
         else
         {
             // user made a loss
-            v.loss = calculateLoss(v.closingPrice, retrievePosition(positionHash)[1], retrievePosition(positionHash)[0], futuresContract, !side);  
-// 66904      
+            v.loss = calculateLoss(v.closingPrice, pos[1], pos[0], futuresContract, !side);  
+   
             subBalance(v.baseToken, user, v.balance, safeMul(min(v.collateral, safeAdd(v.loss, v.totalPayable)), 1e10)); 
-            addBalance(v.baseToken, poolAddress, DMEX_Base(exchangeContract).balanceOf(v.baseToken, poolAddress), safeMul(v.loss, 1e10)); 
+            addBalance(v.baseToken, poolAddress, DMEX_Base(exchangeContract).balanceOf(v.baseToken, poolAddress), safeMul(safeSub(min(v.collateral, safeAdd(v.loss, v.totalPayable)), v.closingFee/2), 1e10)); 
         } 
 
-        addBalance(v.baseToken, feeAccount, DMEX_Base(exchangeContract).balanceOf(v.baseToken, feeAccount), safeMul(v.totalPayable, 1e10)); // send fee to feeAccount
-        
+
+        subReserve(
+            v.baseToken, 
+            user, 
+            v.reserve, 
+            v.collateral
+        ); 
+
+        addBalance(v.baseToken, feeAccount, DMEX_Base(exchangeContract).balanceOf(v.baseToken, feeAccount), safeMul(v.closingFee/2, 1e10)); // send fee to feeAccount
 
         updatePositionSize(positionHash, 0, 0, 0); 
-        updatePositionSize(poolPositionHash, 0, 0, 0); 
+
+        // update pool position
+        updatePositionSize(keccak256(this, poolAddress, futuresContract, !side), 0, 0, 0); 
 
         emit FuturesPositionClosed(positionHash, v.closingPrice);
 
@@ -1605,40 +1333,53 @@ contract Exchange {
         closeFuturesPositionInternal(futuresContract, side, user, poolAddress, expirationFee);
     }
 
-    struct AddMarginValues {
-        bytes32 addMarginHash;
+    struct UpdateMarginValues {
+        bytes32 newMarginHash;
         address baseToken;
     }
 
-    function addMargin (bytes32 futuresContractHash, address user, bool side, uint8 vs, bytes32 r, bytes32 s, uint64 marginToAdd, uint256 operationFee)
+    function updateMargin(bytes32 futuresContractHash, address user, bool side, uint8 vs, bytes32 r, bytes32 s, uint64 newMargin /* 1e8 */, uint256 operationFee /* 1e18 */)
     {
+        if (pools[user]) revert();
         bytes32 positionHash = generatePositionHash(user, futuresContractHash, side);        
         uint256[5] memory pos = retrievePosition(positionHash);
         if (pos[0] == 0) revert();
+        if (newMargin == pos[4]) revert();
 
         uint256 fee = calculateFee(pos[0], pos[1], min(operationFee, takerFee), futuresContractHash); // min(operationFee, takerFee)
 
-        AddMarginValues memory v = AddMarginValues({
-            addMarginHash: keccak256(this, user, futuresContractHash, side, marginToAdd),
+        UpdateMarginValues memory v = UpdateMarginValues({
+            newMarginHash: keccak256(this, user, futuresContractHash, side, newMargin),
             baseToken: getContractBaseToken(futuresContractHash)
         });
 
         // check the signature is correct
-        if (ecrecover(keccak256("\x19Ethereum Signed Message:\n32", v.addMarginHash), vs, r, s) != user) revert();
+        if (ecrecover(keccak256("\x19Ethereum Signed Message:\n32", v.newMarginHash), vs, r, s) != user) revert();
 
         // check user has enough available balance
-        if (DMEX_Base(exchangeContract).availableBalanceOf(v.baseToken, user) < safeMul(safeAdd(marginToAdd, fee), 1e10)) revert();
+        if (newMargin > pos[4])
+        {
+            if (DMEX_Base(exchangeContract).availableBalanceOf(v.baseToken, user) < safeMul(safeAdd(safeSub(newMargin, pos[4]), fee), 1e10)) revert();
+        }        
 
-        // reserve additional margin and subtract fee from user
-        subBalanceAddReserve(v.baseToken, user, safeMul(fee, 1e10), marginToAdd);
-
-        // add margin to position
-        updatePositionSize(positionHash, pos[0], pos[1], safeAdd(pos[4], marginToAdd));
-
+        if (newMargin > pos[4])
+        {
+            // reserve additional margin and subtract fee from user
+            subBalanceAddReserve(v.baseToken, user, safeMul(fee, 1e10), safeSub(newMargin, pos[4]));            
+        }
+        else
+        {
+            // release margin form positon
+            subBalanceSubReserve(v.baseToken, user, safeMul(fee, 1e10), safeSub(pos[4], newMargin));   
+        }
+        
+        // update margin position position
+        updatePositionSize(positionHash, pos[0], pos[1], newMargin);  
+        
         // add fee to feeAccount
         addBalance(v.baseToken, feeAccount, DMEX_Base(exchangeContract).balanceOf(v.baseToken, feeAccount), safeMul(fee, 1e10));
     
-        emit FuturesMarginAdded(user, futuresContractHash, side, marginToAdd);
+        emit FuturesMarginUpdated(user, futuresContractHash, side, newMargin);
     }
 
     // Settle positions for closed contracts
@@ -1655,20 +1396,6 @@ contract Exchange {
             closeFuturesPositionForUser(futuresContracts[i], sides[i], users[i], pools[i], expirationFee[i]);
         }
     }
-
-    // // Liquidate positions
-    // function batchLiquidatePositions (
-    //     bytes32[] futuresContracts,
-    //     address[] users,
-    //     bool[] side,
-    //     uint256[] priceBlockNumber,
-    //     address[] poolAddress
-    // ) onlyAdmin {        
-    //     for (uint i = 0; i < futuresContracts.length; i++) 
-    //     {
-    //         liquidatePositionWithAssetPrice(futuresContracts[i], users[i], side[i], priceBlockNumber[i], poolAddress[i]);
-    //     }
-    // }
 
     function liquidatePositionWithClosingPrice(bytes32 futuresContractHash, address user, bool side, address poolAddress) private
     {
@@ -1699,7 +1426,8 @@ contract Exchange {
     {
         uint256[5] memory pos = retrievePosition(positionHash);
         if (pos[0] == 0) return;
-        if (!pools[poolAddress]) return;      
+        if (!pools[poolAddress]) return;  
+        if (futuresContracts[futuresContractHash].broken) revert(); // contract broken    
 
         bytes32 assetHash = futuresContracts[futuresContractHash].asset;  
 
@@ -1713,13 +1441,7 @@ contract Exchange {
             multiplier: futuresContracts[futuresContractHash].multiplier
         });
         
-        // uint256 maintenanceMargin = futuresAssets[assetHash].maintenanceMargin;
-        // uint256 fundingRate = futuresContracts[futuresContractHash].fundingRate;
-        // uint256 multiplier = futuresContracts[futuresContractHash].multiplier;
-
         uint256 liquidationPrice = calculateLiquidationPrice(pos, [fundingBlocks, v.fundingRate, v.maintenanceMargin, v.multiplier]);
-
-        //LogUint(5, liquidationPrice);
 
         // get block price
         if (( side && price >= liquidationPrice)
@@ -1776,26 +1498,29 @@ contract Exchange {
             price: pos[1],
             baseCollateral: pos[4]
         });
+
+        // adjust funding blocks to funding interval
+        values[0] = safeMul(values[0]/fundingInterval, fundingInterval);
         
         uint256 collateral = safeMul(v.baseCollateral, 1e8) / values[3];
         
         
-        uint256 leverage = safeMul(v.price,v.size)/collateral/1e8;
-        uint256 coef = safeMul(values[2], 1e10)/leverage;
+        uint256 leverage = safeMul(v.price,v.size)/collateral/1e6;
+        uint256 coef = safeMul(safeMul(values[2], 1e10)/leverage, 1e2);
         
         uint256 fundingCost = safeMul(safeMul(safeMul(v.size, v.price)/1e8, values[0]), values[1])/1e18;
         
         uint256 netLiqPrice;
         uint256 liquidationPrice;
         
-        uint256 movement = safeMul(safeSub(collateral, fundingCost), 1e8)/v.size;
+        uint256 movement = safeMul(safeSub(collateral, min(collateral, fundingCost)), 1e8)/v.size;
         
         
         if (pos[2] == 0)
         {
         
             netLiqPrice = safeAdd(v.price, movement);
-            liquidationPrice = safeSub(netLiqPrice, safeMul(v.price, coef)/1e18); 
+            liquidationPrice = safeSub(netLiqPrice, min(netLiqPrice, safeMul(v.price, coef)/1e18)); 
         }
         else
         {
